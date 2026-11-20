@@ -1,0 +1,45 @@
+# MyKandang
+
+Web katalog dan pemesanan ternak dengan HTML, CSS, JavaScript, Express, dan PostgreSQL. Tampilan menyesuaikan layar laptop maupun ponsel.
+
+## Menjalankan aplikasi
+
+1. Buat database PostgreSQL, lalu jalankan [`database-mykandang-lengkap.sql`](database-mykandang-lengkap.sql) satu kali pada database kosong. Skrip tersebut membuat tabel dan memasukkan sepuluh hewan sesuai nama serta nilai yang terlihat di prototype. Untuk memperbarui sepuluh data hewan di database yang sudah ada, jalankan [`seed-10-hewan.sql`](seed-10-hewan.sql).
+2. Siapkan `backend/.env` memakai `backend/.env.example` sebagai acuan, kemudian isi koneksi PostgreSQL milikmu.
+3. Dari folder `backend`, jalankan `npm install`, lalu `npm start`.
+4. Buka `http://localhost:3000`.
+
+## Hosting di Vercel
+
+1. Simpan proyek di GitHub, lalu impor repositorinya dari dashboard Vercel. Root Directory gunakan folder proyek ini; Express entry point berada di `server.js` dan berkas web di `public/`.
+2. Buat PostgreSQL yang bisa diakses dari internet melalui Vercel Marketplace (contohnya Neon atau Supabase). Jalankan SQL skema dan data contoh pada database tersebut. PostgreSQL `localhost` di laptop tidak bisa dipakai oleh deployment.
+3. Di **Project Settings → Environment Variables**, atur `DATABASE_URL` ke connection string pooled dari penyedia PostgreSQL dan `AUTH_SECRET` ke rahasia acak panjang. Pilih Production dan Preview. Jika memakai koneksi terpisah, gunakan `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`, dan `DB_SSL=true` sebagai pengganti `DATABASE_URL`.
+4. Deploy proyek. Jika mengubah environment variable, deploy ulang agar nilainya masuk ke deployment baru.
+
+Jangan unggah `backend/.env` atau kata sandi database ke GitHub. Token login memakai tanda tangan `AUTH_SECRET` agar dapat divalidasi lintas instance Vercel.
+
+## Fitur yang terhubung ke tabel
+
+- Kategori, katalog, foto, detail, pencarian, filter, pengurutan, dan perbandingan: `kategori_hewan`, `hewan`, `gambar_hewan`.
+- Daftar, login, profil, dan role akun: `pengguna`.
+- Wishlist: `wishlist`.
+- Keranjang dan checkout dengan validasi stok: `keranjang`, `detail_keranjang`.
+- Pesanan, item pesanan, pembatalan, dan stok: `pesanan`, `detail_pesanan`.
+- Metode, lokasi/link bukti, dan status pembayaran: `pembayaran`. Konfirmasi tetap dilakukan admin secara manual; belum ada payment gateway atau unggah berkas bukti.
+- Ulasan rating dan komentar: `ulasan`. Ulasan hanya dapat dikirim untuk item pada pesanan selesai.
+- Pesan pengguna dan balasan admin, termasuk status baca: `chat`, `pesan_chat`.
+- Panel `staff_admin`: mengelola data hewan dan foto utama, melihat akun/pesanan/chat, serta memperbarui status pesanan dan pembayaran.
+
+Database belum memiliki tabel penjual/UMKM, alamat terpisah, jadwal serah-terima, notifikasi, atau payment gateway. Karena itu UI tidak menyimpan informasi tersebut. Kolom umur pada SQL hanya bertipe angka; aplikasi menganggap nilainya dalam bulan sesuai data contoh proyek.
+
+## Akun awal
+
+Password pada SQL contoh berupa nilai placeholder (`hash_password_1`, `hash_admin`), jadi akun contoh belum bisa dipakai untuk login. Daftar akun melalui web. Untuk menjadikannya admin, ubah role akun tersebut di PostgreSQL setelah registrasi:
+
+```sql
+UPDATE pengguna
+SET role = 'staff_admin'
+WHERE email = 'email-akun-yang-didaftarkan@example.com';
+```
+
+Keluar lalu masuk kembali agar role baru dimuat, kemudian buka **Admin**.

@@ -9,15 +9,6 @@ Web katalog dan pemesanan ternak dengan HTML, CSS, JavaScript, Express, dan Post
 3. Dari folder `backend`, jalankan `npm install`, lalu `npm start`.
 4. Buka `http://localhost:3000`.
 
-## Hosting di Vercel
-
-1. Simpan proyek di GitHub, lalu impor repositorinya dari dashboard Vercel. Root Directory gunakan folder proyek ini; Express entry point berada di `server.js` dan berkas web di `public/`.
-2. Buat PostgreSQL yang bisa diakses dari internet melalui Vercel Marketplace (contohnya Neon atau Supabase). Jalankan [`my_kandang.sql`](my_kandang.sql) satu kali pada database kosong tersebut. PostgreSQL `localhost` di laptop tidak bisa dipakai oleh deployment.
-3. Di **Project Settings → Environment Variables**, atur `DATABASE_URL` ke connection string pooled dari penyedia PostgreSQL dan `AUTH_SECRET` ke rahasia acak panjang. Pilih Production dan Preview. Jika memakai koneksi terpisah, gunakan `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`, dan `DB_SSL=true` sebagai pengganti `DATABASE_URL`.
-4. Deploy proyek. Jika mengubah environment variable, deploy ulang agar nilainya masuk ke deployment baru.
-
-Jangan unggah `backend/.env` atau kata sandi database ke GitHub. Token login memakai tanda tangan `AUTH_SECRET` agar dapat divalidasi lintas instance Vercel.
-
 ## Fitur yang terhubung ke tabel
 
 - Kategori, katalog, foto, detail, pencarian, filter, pengurutan, dan perbandingan: `kategori_hewan`, `hewan`, `gambar_hewan`.

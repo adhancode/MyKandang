@@ -31,9 +31,11 @@ const catalogOrder = [
   'Bebek Tegal', 'Kambing Etawa', 'Domba Garut', 'Kambing Kacang', 'Sapi Limousin',
 ];
 const catalogOrderIndex = new Map(catalogOrder.map((name, index) => [name.toLocaleLowerCase('id'), index]));
-const limitCatalog = rows => rows
-  .filter(item => catalogOrderIndex.has(item.name.toLocaleLowerCase('id')))
-  .sort((a, b) => catalogOrderIndex.get(a.name.toLocaleLowerCase('id')) - catalogOrderIndex.get(b.name.toLocaleLowerCase('id')));
+const orderCatalog = rows => [...rows].sort((a, b) => {
+  const first = catalogOrderIndex.get(a.name.toLocaleLowerCase('id')) ?? Number.MAX_SAFE_INTEGER;
+  const second = catalogOrderIndex.get(b.name.toLocaleLowerCase('id')) ?? Number.MAX_SAFE_INTEGER;
+  return first - second || a.name.localeCompare(b.name, 'id');
+});
 
 const state = {
   page: 'home',
@@ -68,6 +70,12 @@ const state = {
 };
 
 const formatPrice = value => Number(value) > 0 ? new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', maximumFractionDigits: 0 }).format(value).replace('IDR', 'Rp').replace(/\u00a0/g, '') : 'Harga belum diatur';
+const isGoogleDriveLink = value => {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' && url.hostname === 'drive.google.com' && !url.port && !url.username && !url.password && url.pathname !== '/';
+  } catch { return false; }
+};
 const animalById = id => animals.find(item => String(item.id) === String(id));
 const isSaved = id => state.saved.has(id);
 const animalClass = item => item.category === 'Unggas' || item.kind === 'Ayam' || item.kind === 'Bebek' ? 'unggas' : item.kind === 'Kambing' ? 'kambing' : item.kind === 'Domba' ? 'domba' : '';
@@ -87,7 +95,7 @@ const navItems = [
   { id: 'profile', label: 'Profil', icon: 'user' },
 ];
 
-function setPage(page, opts = {}) {
+function setPage(page, opts = {}, { scrollTarget = '' } = {}) {
   if (state.page === 'catalog' && page === 'detail') state.fromPage = 'catalog';
   if (page === 'detail' && state.page === 'home') state.fromPage = 'home';
   if (page === 'detail' && state.page === 'saved') state.fromPage = 'saved';
@@ -95,7 +103,8 @@ function setPage(page, opts = {}) {
   if (opts.orderId) state.currentOrderId = opts.orderId;
   state.page = page;
   render();
-  window.scrollTo({ top: 0, behavior: 'smooth' });
+  if (scrollTarget) document.getElementById(scrollTarget)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  else window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
 function navActive(page) {
@@ -115,6 +124,7 @@ function renderShell() {
       <button class="icon-button" aria-label="Cari hewan" data-action="open-search">${icon('search')}</button>
       <button class="icon-button" aria-label="Bandingkan hewan" data-page="compare">${icon('grid')}${state.compare.length ? `<span class="bag-count">${state.compare.length}</span>` : ''}</button>
       <button class="icon-button" aria-label="Keranjang" data-page="cart">${icon('package')}${state.cart.length ? `<span class="bag-count">${state.cart.length}</span>` : ''}</button>
+      <button class="icon-button" aria-label="Chat MyKandang" title="Chat MyKandang" data-action="chat">${icon('message')}</button>
       ${state.user ? `<button class="avatar-button" aria-label="Buka profil" data-page="profile">${escapeHtml(state.user.nama.split(/\s+/).map(part=>part[0]).slice(0,2).join('').toUpperCase())}</button>` : `<button class="button button-secondary button-small" data-action="auth">Masuk</button>`}
     </div>
   </div>`;
@@ -148,7 +158,7 @@ function renderHome() {
   return `<section class="page">
     <div class="hero">
       <div class="hero-copy">
-        <span class="eyebrow">Pasar ternak pilihan keluarga Indonesia</span>
+        <span class="eyebrow">Pasar Ternak Pilihan Keluarga Indonesia</span>
         <h1>Temukan ternak sehat,<br /><em>pilihan yang lebih yakin.</em></h1>
         <p>Jelajahi ternak berdasarkan kategori, kondisi, umur, stok, dan harga yang tercatat.</p>
         <form class="searchbar" data-form="search"><span>${icon('search')}</span><input name="query" placeholder="Cari sapi, kambing, domba…" aria-label="Cari hewan" /><button class="button" type="submit">Cari hewan</button></form>
@@ -156,13 +166,13 @@ function renderHome() {
       </div>
     </div>
     <section class="section">
-      <div class="section-heading"><div><span class="eyebrow">Temukan kebutuhanmu</span><h2>Jelajahi kategori</h2></div><button class="text-link" data-page="catalog">Lihat semua hewan ${icon('chevron',13)}</button></div>
+      <div class="section-heading"><div><span class="eyebrow">Temukan Kebutuhanmu</span><h2>Jelajahi kategori</h2></div><button class="text-link" data-page="catalog">Lihat semua hewan ${icon('chevron',13)}</button></div>
       <div class="category-grid">
         ${categories.map(category => `<button class="category-card" data-category="${escapeHtml(category.nama_kategori)}"><span class="category-icon">${animalEmoji({kind:category.nama_kategori})}</span><span><strong>${escapeHtml(category.nama_kategori)}</strong><small>${escapeHtml(category.deskripsi || 'Lihat hewan tersedia')}</small></span>${icon('chevron',15)}</button>`).join('')}
       </div>
     </section>
     <section class="section">
-      <div class="section-heading"><div><span class="eyebrow">Pilihan terbaru</span><h2>Hewan terbaru</h2><p class="subtle small" style="margin:5px 0 0">Temukan ternak sehat yang baru bergabung.</p></div><button class="text-link" data-page="catalog">Lihat semua ${icon('chevron',13)}</button></div>
+      <div class="section-heading"><div><span class="eyebrow">Pilihan Terbaru</span><h2>Hewan terbaru</h2><p class="subtle small" style="margin:5px 0 0">Temukan ternak sehat yang baru bergabung.</p></div><button class="text-link" data-page="catalog">Lihat semua ${icon('chevron',13)}</button></div>
       <div class="animal-grid">${latest.map(item => animalCard(item)).join('')}</div>
     </section>
     <div class="trust-strip">
@@ -228,7 +238,7 @@ function renderCatalog() {
   const list = getFilteredAnimals();
   const activeCount = state.filters.kinds.length + state.filters.health.length + (state.filters.min||state.filters.max ? 1 : 0) + (state.filters.age ? 1 : 0);
   return `<section class="page">
-    <div class="page-header"><div><span class="eyebrow">Pasar hewan</span><h1>Daftar hewan</h1><p>Bandingkan kategori, kondisi kesehatan, umur, stok, dan harga.</p></div>
+    <div class="page-header"><div><span class="eyebrow">Pasar Hewan</span><h1>Daftar hewan</h1><p>Bandingkan kategori, kondisi kesehatan, umur, stok, dan harga.</p></div>
       <div class="catalog-controls">
         <form class="catalog-search" data-form="search">${icon('search')}<input name="query" value="${escapeHtml(state.query)}" placeholder="Cari hewan atau kata kunci…" aria-label="Cari hewan" /></form>
         <button class="button button-secondary button-small" data-action="filters">${icon('sliders')} Filter ${activeCount ? `<span class="pill">${activeCount}</span>` : ''}</button>
@@ -246,7 +256,7 @@ function renderSaved() {
   const savedList = [...state.saved].map(animalById).filter(Boolean);
   const visible = state.savedTab === 'Tersedia' ? savedList.filter(item => item.stock === 'Tersedia') : state.savedTab === 'Sudah terjual' ? savedList.filter(item => item.stock !== 'Tersedia') : savedList;
   return `<section class="page">
-    <div class="saved-head"><div><span class="eyebrow">Koleksi pilihanmu</span><h1>Hewan tersimpan</h1><p class="subtle" style="margin:5px 0 0">Simpan ternak menarik dan lihat lagi kapan saja.</p></div>
+    <div class="saved-head"><div><span class="eyebrow">Koleksi Pilihanmu</span><h1>Hewan tersimpan</h1><p class="subtle" style="margin:5px 0 0">Simpan ternak menarik dan lihat lagi kapan saja.</p></div>
       <div class="tabs">${['Semua','Tersedia','Sudah terjual'].map(tab => `<button class="tab ${state.savedTab===tab?'active':''}" data-action="saved-tab" data-value="${tab}">${tab}${tab==='Semua' ? ` · ${savedList.length}` : ''}</button>`).join('')}</div>
     </div>
     ${visible.length ? `<div class="animal-grid">${visible.map(animalCard).join('')}</div>` : `<div class="empty-state"><div class="empty-illustration">♡</div><h3>${state.savedTab==='Sudah terjual'?'Belum ada hewan terjual':'Belum ada hewan tersimpan'}</h3><p>Jelajahi daftar hewan dan simpan pilihan yang menarik bagimu.</p><button class="button" data-page="catalog">Jelajahi hewan ${icon('arrowRight',15)}</button></div>`}
@@ -257,7 +267,7 @@ function renderOrders() {
   if (!state.user) return `<section class="page">${authRequired('Masuk untuk melihat pesanan')}</section>`;
   const orders = [...state.orders].reverse();
   return `<section class="page">
-    <div class="page-header"><div><span class="eyebrow">Transaksi kamu</span><h1>Pesanan</h1><p>Pantau status pesanan, item, dan pembayaran.</p></div></div>
+    <div class="page-header"><div><span class="eyebrow">Transaksi Kamu</span><h1>Pesanan</h1><p>Pantau status pesanan, item, dan pembayaran.</p></div></div>
     ${orders.length ? `<div class="order-list">${orders.map(order => {
       const first = order.details?.[0];
       return `<article class="order-card"><div class="order-thumb">${first ? animalEmoji({kind:animalById(first.id_hewan)?.kind}) : '📦'}</div><div class="order-main"><span class="pill ${order.status_pesanan==='Dibatalkan'?'red':''}">${order.status_pesanan}</span><h3>${first?.nama || 'Pesanan hewan'}${order.details?.length>1?` + ${order.details.length-1} hewan`:''}</h3><p>No. Pesanan ${order.id_pesanan} · ${new Date(order.tgl_pesanan).toLocaleDateString('id-ID')}</p><p>${order.metode_serah_terima}</p></div><div class="order-actions"><div><div class="order-price">${formatPrice(order.total_harga)}</div><button class="button button-secondary button-small" data-action="order-detail" data-id="${order.id_pesanan}">Lihat pesanan</button></div></div></article>`;
@@ -268,7 +278,7 @@ function renderOrders() {
 function renderCart() {
   if (!state.user) return `<section class="page">${authRequired('Masuk untuk menggunakan keranjang')}</section>`;
   const total = state.cart.reduce((sum,item)=>sum+item.price*item.jumlah,0);
-  return `<section class="page"><div class="page-header"><div><span class="eyebrow">Keranjang belanja</span><h1>Keranjang</h1><p>Periksa hewan dan jumlah sebelum membuat pesanan.</p></div></div>
+  return `<section class="page"><div class="page-header"><div><span class="eyebrow">Keranjang Belanja</span><h1>Keranjang</h1><p>Periksa hewan dan jumlah sebelum membuat pesanan.</p></div></div>
     ${state.cart.length ? `<div class="checkout-layout"><div class="order-list">${state.cart.map(item=>`<article class="order-card"><div class="order-thumb">${animalEmoji(item)}</div><div class="order-main"><h3>${escapeHtml(item.name)}</h3><p>${item.kind} · ${item.age} · ${item.stock}</p><div class="order-price">${formatPrice(item.price)}</div></div><div class="order-actions"><label class="small">Jumlah <input class="field" type="number" min="1" max="${item.stockCount}" value="${item.jumlah}" data-cart-quantity="${item.id}" style="width:70px;min-height:34px;padding:5px" /></label><button class="button-ghost" data-action="remove-cart" data-id="${item.id}">Hapus</button></div></article>`).join('')}</div><aside class="panel"><div class="panel-head"><h3>Ringkasan</h3></div><div class="summary-line"><span>${state.cart.length} jenis hewan</span><strong>${formatPrice(total)}</strong></div><div class="detail-divider"></div><button class="button button-block" data-action="checkout-cart">Lanjut ke pesanan ${icon('arrowRight',14)}</button></aside></div>` : `<div class="empty-state"><div class="empty-illustration">🛒</div><h3>Keranjang masih kosong</h3><p>Tambahkan hewan yang ingin kamu pesan.</p><button class="button" data-page="catalog">Cari hewan</button></div>`}
   </section>`;
 }
@@ -280,16 +290,16 @@ function renderDetail() {
   const image=item.images?.find(image=>image.utama)?.url || item.images?.[0]?.url;
   return `<section class="page"><button class="back-link" data-page="${from}">${icon('arrow')} Kembali ke ${from==='saved'?'wishlist':from==='home'?'beranda':'daftar hewan'}</button><div class="detail-layout">
     <div><div class="detail-photo ${animalClass(item)}"><span class="photo-tag pill ${item.stock==='Tersedia'?'white':'red'}"><i class="pill-dot"></i> ${escapeHtml(item.stock)}</span>${image?`<img class="detail-image" src="${escapeHtml(image)}" alt="${escapeHtml(item.name)}" onerror="this.hidden=true;this.nextElementSibling.hidden=false" /><span class="animal-emoji" hidden>${animalEmoji(item)}</span>`:`<span class="animal-emoji">${animalEmoji(item)}</span>`}</div>
-      <div class="section" style="margin-top:22px"><div class="section-heading"><div><span class="eyebrow">Tabel hewan</span><h2>Data hewan</h2></div></div><div class="spec-grid"><div class="spec-card"><span>Jenis</span><strong>${escapeHtml(item.kind||'—')}</strong></div><div class="spec-card"><span>Ras</span><strong>${escapeHtml(item.breed||'—')}</strong></div><div class="spec-card"><span>Umur</span><strong>${escapeHtml(item.age)}</strong></div><div class="spec-card"><span>Berat</span><strong>${item.weight==null?'—':`${item.weight} kg`}</strong></div><div class="spec-card"><span>Jenis kelamin</span><strong>${escapeHtml(item.gender||'—')}</strong></div><div class="spec-card"><span>Stok</span><strong>${item.stockCount} ekor</strong></div></div><div class="health-note"><strong>${icon('shield',14)} Kondisi kesehatan</strong>${escapeHtml(item.health)}${item.description?`<br />${escapeHtml(item.description)}`:''}</div></div>
-    </div><div class="detail-summary"><span class="pill">${escapeHtml(item.category)}</span><h1>${escapeHtml(item.name)} ${escapeHtml(item.gender||'')}</h1><div class="detail-meta">${item.rating?`<span class="compare-rating">★</span><strong>${item.rating.toFixed(1)}</strong><span class="muted">${item.reviews} ulasan</span>`:'<span class="muted">Belum ada ulasan</span>'}</div><div class="detail-price">${formatPrice(item.price)} <small class="muted" style="font:500 11px 'DM Sans'">/ ekor</small></div><p class="subtle small">Informasi berasal dari tabel hewan dan ulasan.</p><div class="detail-divider"></div><div class="detail-actions"><button class="button" data-action="checkout" data-id="${item.id}" ${item.stock==='Tersedia'?'':'disabled'}>${item.stock==='Tersedia'?'Pesan hewan':item.stock==='Terjual'?'Sudah terjual':'Stok habis'} ${icon('arrowRight',15)}</button><button class="button button-secondary" data-action="add-cart" data-id="${item.id}" ${item.stock==='Tersedia'?'':'disabled'}>${icon('package')} Keranjang</button><button class="icon-button ${isSaved(item.id)?'saved':''}" data-action="save" data-id="${item.id}" aria-label="Simpan ke wishlist">${icon('heart')}</button></div>${state.user?.role==='staff_admin'?'':`<button class="text-link" data-action="chat">Chat MyKandang ${icon('chevron',12)}</button>`}</div>
-    </div><section class="section"><div class="section-heading"><div><span class="eyebrow">Tabel ulasan</span><h2>Ulasan pembeli</h2></div><span class="muted small">${state.animalReviews.length} ulasan</span></div>${state.animalReviews.length ? `<div class="review-list">${state.animalReviews.map(review=>`<article class="panel review-entry"><div class="panel-head"><strong>${escapeHtml(review.nama_pengguna)}</strong><span class="stars">${'★'.repeat(Number(review.rating))}${'☆'.repeat(5-Number(review.rating))}</span></div><p>${escapeHtml(review.komentar||'Tanpa komentar')}</p><small class="muted">${new Date(review.tanggal).toLocaleDateString('id-ID')}</small></article>`).join('')}</div>` : '<p class="subtle">Belum ada ulasan untuk hewan ini.</p>'}</section><section class="section"><div class="section-heading"><div><span class="eyebrow">Data katalog</span><h2>Hewan lainnya</h2></div><button class="text-link" data-page="catalog">Lihat katalog</button></div><div class="animal-grid">${animals.filter(a=>a.id!==item.id).slice(0,4).map(animalCard).join('')}</div></section></section>`;
+      <div class="section" style="margin-top:22px"><div class="section-heading"><div><span class="eyebrow">Tabel Data Hewan</span><h2>Data hewan</h2></div></div><div class="spec-grid"><div class="spec-card"><span>Jenis</span><strong>${escapeHtml(item.kind||'—')}</strong></div><div class="spec-card"><span>Ras</span><strong>${escapeHtml(item.breed||'—')}</strong></div><div class="spec-card"><span>Umur</span><strong>${escapeHtml(item.age)}</strong></div><div class="spec-card"><span>Berat</span><strong>${item.weight==null?'—':`${item.weight} kg`}</strong></div><div class="spec-card"><span>Jenis kelamin</span><strong>${escapeHtml(item.gender||'—')}</strong></div><div class="spec-card"><span>Stok</span><strong>${item.stockCount} ekor</strong></div></div><div class="health-note"><strong>${icon('shield',14)} Kondisi kesehatan</strong>${escapeHtml(item.health)}${item.description?`<br />${escapeHtml(item.description)}`:''}</div></div>
+    </div><div class="detail-summary"><span class="pill">${escapeHtml(item.category)}</span><h1>${escapeHtml(item.name)} ${escapeHtml(item.gender||'')}</h1><div class="detail-meta">${item.rating?`<span class="compare-rating">★</span><strong>${item.rating.toFixed(1)}</strong><span class="muted">${item.reviews} ulasan</span>`:'<span class="muted">Belum ada ulasan</span>'}</div><div class="detail-price">${formatPrice(item.price)} <small class="muted" style="font:500 11px 'DM Sans'">/ ekor</small></div><p class="subtle small">Detail hewan, kondisi kesehatan, dan ulasan pembeli.</p><div class="detail-divider"></div><div class="detail-actions"><button class="button" data-action="checkout" data-id="${item.id}" ${item.stock==='Tersedia'?'':'disabled'}>${item.stock==='Tersedia'?'Pesan hewan':item.stock==='Terjual'?'Sudah terjual':'Stok habis'} ${icon('arrowRight',15)}</button><button class="button button-secondary" data-action="add-cart" data-id="${item.id}" ${item.stock==='Tersedia'?'':'disabled'}>${icon('package')} Keranjang</button><button class="icon-button ${isSaved(item.id)?'saved':''}" data-action="save" data-id="${item.id}" aria-label="Simpan ke wishlist">${icon('heart')}</button></div>${state.user?.role==='staff_admin'?'':`<button class="text-link" data-action="chat">Chat MyKandang ${icon('chevron',12)}</button>`}</div>
+    </div><section class="section"><div class="section-heading"><div><span class="eyebrow">Tabel Ulasan</span><h2>Ulasan pembeli</h2></div><span class="muted small">${state.animalReviews.length} ulasan</span></div>${state.animalReviews.length ? `<div class="review-list">${state.animalReviews.map(review=>`<article class="panel review-entry"><div class="panel-head"><strong>${escapeHtml(review.nama_pengguna)}</strong><span class="stars">${'★'.repeat(Number(review.rating))}${'☆'.repeat(5-Number(review.rating))}</span></div><p>${escapeHtml(review.komentar||'Tanpa komentar')}</p><small class="muted">${new Date(review.tanggal).toLocaleDateString('id-ID')}</small></article>`).join('')}</div>` : '<p class="subtle">Belum ada ulasan untuk hewan ini.</p>'}</section><section class="section"><div class="section-heading"><div><span class="eyebrow">Data Katalog</span><h2>Hewan lainnya</h2></div><button class="text-link" data-page="catalog">Lihat katalog</button></div><div class="animal-grid">${animals.filter(a=>a.id!==item.id).slice(0,4).map(animalCard).join('')}</div></section></section>`;
 }
 
 function renderCompare() {
   const items=state.compare.map(animalById).filter(Boolean);
   if (!items.length) return `<section class="page"><div class="page-header"><div><span class="eyebrow">Perbandingan</span><h1>Bandingkan hewan</h1><p>Pilih sampai 3 hewan dari katalog.</p></div></div><div class="empty-state"><div class="empty-illustration">⚖️</div><h3>Belum ada hewan dipilih</h3><button class="button" data-page="catalog">Pilih hewan</button></div></section>`;
   const rows=[['Harga',item=>formatPrice(item.price)],['Kategori',item=>item.category],['Jenis',item=>item.kind||'—'],['Ras',item=>item.breed||'—'],['Umur',item=>item.age],['Berat',item=>item.weight==null?'—':`${item.weight} kg`],['Jenis kelamin',item=>item.gender||'—'],['Kesehatan',item=>item.health],['Stok',item=>`${item.stockCount} ekor`],['Rating ulasan',item=>item.rating?`★ ${item.rating.toFixed(1)} (${item.reviews})`:'Belum ada ulasan']];
-  return `<section class="page"><button class="back-link" data-page="catalog">${icon('arrow')} Kembali ke katalog</button><div class="page-header"><div><span class="eyebrow">Perbandingan data hewan</span><h1>Bandingkan hewan</h1><p>Perbandingan memakai informasi dari tabel hewan dan ulasan.</p></div></div><div class="compare-wrap"><table class="compare-table"><tbody><tr><th>Hewan</th>${items.map(item=>`<td><div class="compare-animal"><div class="compare-emoji">${animalEmoji(item)}</div><strong>${escapeHtml(item.name)}</strong><button class="button-ghost" data-action="remove-compare" data-id="${item.id}">Hapus</button></div></td>`).join('')}</tr>${rows.map(([label,fn])=>`<tr><th>${label}</th>${items.map(item=>`<td class="compare-value ${label==='Harga'?'price':''}">${escapeHtml(fn(item))}</td>`).join('')}</tr>`).join('')}</tbody></table></div></section>`;
+  return `<section class="page"><button class="back-link" data-page="catalog">${icon('arrow')} Kembali ke katalog</button><div class="page-header"><div><span class="eyebrow">Perbandingan Data Hewan</span><h1>Bandingkan hewan</h1><p>Bandingkan harga, kondisi kesehatan, dan ulasan secara berdampingan.</p></div></div><div class="compare-wrap"><table class="compare-table"><tbody><tr><th>Hewan</th>${items.map(item=>`<td><div class="compare-animal"><div class="compare-emoji">${animalEmoji(item)}</div><strong>${escapeHtml(item.name)}</strong><button class="button-ghost" data-action="remove-compare" data-id="${item.id}">Hapus</button></div></td>`).join('')}</tr>${rows.map(([label,fn])=>`<tr><th>${label}</th>${items.map(item=>`<td class="compare-value ${label==='Harga'?'price':''}">${escapeHtml(fn(item))}</td>`).join('')}</tr>`).join('')}</tbody></table></div></section>`;
 }
 
 function renderCheckout() {
@@ -298,12 +308,12 @@ function renderCheckout() {
   if (!items.length) return renderCart();
   const total = items.reduce((sum,item)=>sum+item.price*item.jumlah,0);
   const method = state.checkout.method || 'Kirim Kurir';
-  return `<section class="page"><button class="back-link" data-page="cart">${icon('arrow')} Kembali ke keranjang</button><div class="page-header"><div><span class="eyebrow">Tabel pesanan dan detail</span><h1>Konfirmasi pesanan</h1><p>Informasi checkout mengikuti kolom pesanan pada database.</p></div></div>
+  return `<section class="page"><button class="back-link" data-page="cart">${icon('arrow')} Kembali ke keranjang</button><div class="page-header"><div><span class="eyebrow">Tabel Pesanan</span><h1>Konfirmasi pesanan</h1><p>Periksa detail pesanan sebelum melanjutkan.</p></div></div>
   <div class="checkout-layout"><div class="checkout-stack"><section class="panel"><div class="panel-head"><h3>Metode serah terima</h3></div><div class="radio-list">
     <label class="choice-card ${method==='Kirim Kurir'?'selected':''}"><input type="radio" name="method" value="Kirim Kurir" data-change="method" ${method==='Kirim Kurir'?'checked':''}/><span class="choice-icon">🚚</span><span class="choice-copy"><strong>Kirim kurir</strong><small>Alamat diambil dari data pengguna.</small></span></label>
     <label class="choice-card ${method==='Ambil di Kandang'?'selected':''}"><input type="radio" name="method" value="Ambil di Kandang" data-change="method" ${method==='Ambil di Kandang'?'checked':''}/><span class="choice-icon">📍</span><span class="choice-copy"><strong>Ambil di kandang</strong><small>Atur pengambilan langsung.</small></span></label></div>
     ${method==='Kirim Kurir'?`<div class="field-group"><label class="form-label">Alamat pengiriman</label><textarea class="field" id="order-address" required>${escapeHtml(state.checkout.address||state.profile?.alamat||'')}</textarea></div>`:''}
-  </section><section class="panel"><div class="panel-head"><h3>Pembayaran</h3></div><label class="form-label" for="payment-method">Metode pembayaran</label><select class="field" id="payment-method">${['Transfer Bank','E-Wallet','Tunai'].map(option=>`<option ${state.checkout.paymentMethod===option?'selected':''}>${option}</option>`).join('')}</select><label class="form-label" for="payment-proof" style="margin-top:12px">Link/lokasi bukti pembayaran <span class="muted">(opsional)</span></label><input class="field" id="payment-proof" type="text" maxlength="255" value="${escapeHtml(state.checkout.proof||'')}" placeholder="Link atau nama file bukti" /><p class="subtle small" style="margin:10px 0 0">Metode, link/lokasi bukti, dan status dicatat. Pembayaran online belum terhubung.</p></section></div>
+  </section><section class="panel"><div class="panel-head"><h3>Pembayaran</h3></div><label class="form-label" for="payment-method">Metode pembayaran</label><select class="field" id="payment-method">${['Transfer Bank','E-Wallet','Tunai'].map(option=>`<option ${state.checkout.paymentMethod===option?'selected':''}>${option}</option>`).join('')}</select><label class="form-label" for="payment-proof" style="margin-top:12px">Tautan Google Drive bukti pembayaran <span class="muted">(opsional)</span></label><input class="field" id="payment-proof" type="url" maxlength="255" pattern="https://drive[.]google[.]com/.+" title="Gunakan tautan berbagi Google Drive" value="${escapeHtml(state.checkout.proof||'')}" placeholder="Tempel link berbagi Google Drive" /><p class="subtle small" style="margin:10px 0 0">Tempel tautan berbagi Google Drive dan pastikan aksesnya dapat dibuka admin.</p></section></div>
   <aside class="panel"><div class="panel-head"><h3>Ringkasan pesanan</h3></div>${items.map(item=>`<div class="summary-product"><div class="summary-thumb">${animalEmoji(item)}</div><span><strong>${escapeHtml(item.name)}</strong><small>${item.jumlah} ekor × ${formatPrice(item.price)}</small></span></div>`).join('')}<div class="summary-lines"><div class="summary-line"><span>Subtotal</span><strong>${formatPrice(total)}</strong></div></div><div class="summary-total"><span>Total</span><strong>${formatPrice(total)}</strong></div><button class="button button-block" style="margin-top:16px" data-action="place-order">Simpan pesanan ${icon('arrowRight',14)}</button></aside></div></section>`;
 }
 
@@ -314,45 +324,46 @@ function renderOrderDetail() {
   const details = order.details || [];
   const status = order.status_pesanan || 'Pending';
   const canReview = status === 'Selesai';
-  return `<section class="page"><button class="back-link" data-page="orders">${icon('arrow')} Kembali ke pesanan</button><div class="page-header"><div><span class="eyebrow">Pesanan #${order.id_pesanan}</span><h1>Status pesanan</h1><p>${new Date(order.tgl_pesanan).toLocaleString('id-ID')}</p></div><span class="pill ${cancelled?'red':''}">${escapeHtml(status)}</span></div><div class="status-layout"><div class="checkout-stack"><div class="status-banner"><span class="status-icon">${cancelled?'↩':'✓'}</span><span><strong>${cancelled?'Pesanan dibatalkan':`Status ${escapeHtml(status)}`}</strong><p>Status dibaca dari tabel pesanan.</p></span></div><section class="panel"><div class="panel-head"><h3>Detail pesanan</h3></div>${details.map(line=>`<div class="summary-product"><div class="summary-thumb">${animalEmoji({kind:animalById(line.id_hewan)?.kind})}</div><span><strong>${escapeHtml(line.nama)}</strong><small>${line.kuantitas} ekor × ${formatPrice(line.harga_satuan)}</small><small>Subtotal ${formatPrice(line.subtotal)}</small>${canReview?(line.sudah_diulas?'<small class="muted">Ulasan sudah dikirim</small>':`<button class="text-link" data-action="write-review" data-id="${order.id_pesanan}" data-animal="${line.id_hewan}">Beri ulasan</button>`):''}</span></div>`).join('')}${status==='Pending'?`<div class="info-callout">Pesanan menunggu proses berikutnya.</div><button class="button button-danger button-small" data-action="cancel-order" data-id="${order.id_pesanan}">Batalkan pesanan</button>`:''}</section></div>
-  <aside class="panel"><div class="panel-head"><h3>Pembayaran</h3></div><div class="receipt-row"><span>Status</span><strong>${escapeHtml(order.status_pembayaran||'Belum Dibayar')}</strong></div><div class="receipt-row"><span>Metode</span><strong>${escapeHtml(order.metode_pembayaran||'Belum dipilih')}</strong></div><div class="receipt-row total"><span>Total</span><strong>${formatPrice(order.total_harga)}</strong></div>${order.bukti?`<div class="receipt-row"><span>Link/lokasi bukti</span><span class="small">${escapeHtml(order.bukti)}</span></div>`:''}${order.status_pembayaran==='Belum Dibayar'?`<label class="form-label" for="payment-method">Pilih metode</label><select class="field" id="payment-method"><option>Transfer Bank</option><option>E-Wallet</option><option>Tunai</option></select><label class="form-label" for="payment-proof" style="margin-top:10px">Link/lokasi bukti</label><input class="field" id="payment-proof" type="text" maxlength="255" value="${escapeHtml(order.bukti||'')}" placeholder="Link atau nama file bukti" /><button class="button button-block" style="margin-top:10px" data-action="payment" data-id="${order.id_pesanan}">Simpan pembayaran</button>`:''}<p class="small muted" style="margin-top:12px">Pembayaran tercatat di database; konfirmasi transaksi berlangsung di luar web.</p></aside></div></section>`;
+  return `<section class="page"><button class="back-link" data-page="orders">${icon('arrow')} Kembali ke pesanan</button><div class="page-header"><div><span class="eyebrow">Pesanan #${order.id_pesanan}</span><h1>Status pesanan</h1><p>${new Date(order.tgl_pesanan).toLocaleString('id-ID')}</p></div><span class="pill ${cancelled?'red':''}">${escapeHtml(status)}</span></div><div class="status-layout"><div class="checkout-stack"><div class="status-banner"><span class="status-icon">${cancelled?'↩':'✓'}</span><span><strong>${cancelled?'Pesanan dibatalkan':`Status ${escapeHtml(status)}`}</strong><p>Status pesanan terbaru ditampilkan di sini.</p></span></div><section class="panel"><div class="panel-head"><h3>Detail pesanan</h3></div>${details.map(line=>`<div class="summary-product"><div class="summary-thumb">${animalEmoji({kind:animalById(line.id_hewan)?.kind})}</div><span><strong>${escapeHtml(line.nama)}</strong><small>${line.kuantitas} ekor × ${formatPrice(line.harga_satuan)}</small><small>Subtotal ${formatPrice(line.subtotal)}</small>${canReview?(line.sudah_diulas?'<small class="muted">Ulasan sudah dikirim</small>':`<button class="text-link" data-action="write-review" data-id="${order.id_pesanan}" data-animal="${line.id_hewan}">Beri ulasan</button>`):''}</span></div>`).join('')}${status==='Pending'?`<div class="info-callout">Pesanan menunggu proses berikutnya.</div><button class="button button-danger button-small" data-action="cancel-order" data-id="${order.id_pesanan}">Batalkan pesanan</button>`:''}</section></div>
+  <aside class="panel"><div class="panel-head"><h3>Pembayaran</h3></div><div class="receipt-row"><span>Status</span><strong>${escapeHtml(order.status_pembayaran||'Belum Dibayar')}</strong></div><div class="receipt-row"><span>Metode</span><strong>${escapeHtml(order.metode_pembayaran||'Belum dipilih')}</strong></div><div class="receipt-row total"><span>Total</span><strong>${formatPrice(order.total_harga)}</strong></div>${order.bukti?`<div class="receipt-row"><span>Bukti pembayaran</span>${isGoogleDriveLink(order.bukti)?`<a class="text-link small" href="${escapeHtml(order.bukti)}" target="_blank" rel="noopener noreferrer">Buka Google Drive</a>`:`<small class="small muted">Tautan lama bukan link Google Drive.</small>`}</div>`:''}${order.status_pembayaran==='Belum Dibayar'?`<label class="form-label" for="payment-method">Pilih metode</label><select class="field" id="payment-method"><option>Transfer Bank</option><option>E-Wallet</option><option>Tunai</option></select><label class="form-label" for="payment-proof" style="margin-top:10px">Tautan Google Drive bukti pembayaran <span class="muted">(opsional)</span></label><input class="field" id="payment-proof" type="url" maxlength="255" pattern="https://drive[.]google[.]com/.+" title="Gunakan tautan berbagi Google Drive" value="${escapeHtml(order.bukti||'')}" placeholder="Tempel link berbagi Google Drive" /><button class="button button-block" style="margin-top:10px" data-action="payment" data-id="${order.id_pesanan}">Simpan pembayaran</button>`:''}<p class="small muted" style="margin-top:12px">Pembayaran tercatat di aplikasi; konfirmasi transaksi berlangsung di luar web.</p></aside></div></section>`;
 }
 
 function renderReview() {
   const order=currentOrder();
   const detail=order?.details?.find(item=>Number(item.id_hewan)===Number(state.currentReviewAnimalId)) || order?.details?.find(item=>!item.sudah_diulas);
   if (!order || order.status_pesanan!=='Selesai') return renderOrders();
-  return `<section class="page"><button class="back-link" data-page="order-detail" data-id="${order.id_pesanan}">${icon('arrow')} Kembali ke pesanan</button><div class="page-header"><div><span class="eyebrow">Tabel ulasan</span><h1>Ulasan hewan</h1><p>Ulasan terhubung dengan pengguna, hewan, dan pesanan.</p></div></div><div class="panel" style="max-width:650px"><div class="summary-product"><div class="summary-thumb">${animalEmoji({kind:animalById(detail?.id_hewan)?.kind})}</div><span><strong>${escapeHtml(detail?.nama||'Hewan')}</strong><small>Pesanan #${order.id_pesanan}</small></span></div><div class="detail-divider"></div><label class="form-label">Rating</label><div class="review-stars">${[1,2,3,4,5].map(i=>`<button class="star-button ${i<=state.reviewRating?'active':''}" data-action="rating" data-value="${i}" aria-label="${i} bintang">★</button>`).join('')}</div><label class="form-label" for="review-copy">Komentar <span class="muted">(maksimal 500 karakter)</span></label><textarea class="field" id="review-copy" maxlength="500" placeholder="Bagikan pengalamanmu tentang hewan ini." style="min-height:110px"></textarea><button class="button button-block" style="margin-top:17px" data-action="submit-review" data-id="${order.id_pesanan}" data-animal="${detail?.id_hewan}">Kirim ulasan ${icon('arrowRight',14)}</button></div></section>`;
+  return `<section class="page"><button class="back-link" data-page="order-detail" data-id="${order.id_pesanan}">${icon('arrow')} Kembali ke pesanan</button><div class="page-header"><div><span class="eyebrow">Tabel Ulasan</span><h1>Ulasan hewan</h1><p>Ulasan ini terkait dengan hewan yang sudah kamu pesan.</p></div></div><div class="panel" style="max-width:650px"><div class="summary-product"><div class="summary-thumb">${animalEmoji({kind:animalById(detail?.id_hewan)?.kind})}</div><span><strong>${escapeHtml(detail?.nama||'Hewan')}</strong><small>Pesanan #${order.id_pesanan}</small></span></div><div class="detail-divider"></div><label class="form-label">Rating</label><div class="review-stars">${[1,2,3,4,5].map(i=>`<button class="star-button ${i<=state.reviewRating?'active':''}" data-action="rating" data-value="${i}" aria-label="${i} bintang">★</button>`).join('')}</div><label class="form-label" for="review-copy">Komentar <span class="muted">(maksimal 500 karakter)</span></label><textarea class="field" id="review-copy" maxlength="500" placeholder="Bagikan pengalamanmu tentang hewan ini." style="min-height:110px"></textarea><button class="button button-block" style="margin-top:17px" data-action="submit-review" data-id="${order.id_pesanan}" data-animal="${detail?.id_hewan}">Kirim ulasan ${icon('arrowRight',14)}</button></div></section>`;
 }
 
 function renderProfile() {
   if (!state.user) return `<section class="page"><div class="empty-state"><div class="empty-illustration">👤</div><h3>Masuk untuk melihat akun</h3><p>Kelola profil dan alamat, pantau pesanan, serta lihat hewan favorit yang kamu simpan.</p><button class="button" data-action="auth">Masuk atau daftar</button></div></section>`;
   const p = state.profile;
-  return `<section class="page"><div class="page-header"><div><span class="eyebrow">Tabel pengguna</span><h1>Profil</h1><p>Data akun dibaca dan diperbarui pada tabel pengguna.</p></div></div><section class="panel" style="max-width:760px"><div class="panel-head"><div class="seller-person"><span class="profile-large-avatar">${escapeHtml(p.nama.split(/\s+/).map(part=>part[0]).slice(0,2).join('').toUpperCase())}</span><span><h3>${escapeHtml(p.nama)}</h3><span class="muted small">${escapeHtml(p.email)} · ${escapeHtml(p.role)}</span></span></div><button class="button button-secondary button-small" data-action="edit-profile">${icon('edit',14)} Ubah</button></div><div class="profile-data"><div class="data-item"><span>Nomor handphone</span><strong>${escapeHtml(p.no_telepon || 'Belum dicantumkan')}</strong></div><div class="data-item"><span>Alamat</span><strong>${escapeHtml(p.alamat || 'Belum dicantumkan')}</strong></div></div>${p.role==='staff_admin'?`<div class="detail-divider"></div><button class="button button-secondary button-small" data-page="admin">Buka panel admin ${icon('arrowRight',14)}</button>`:''}<div class="detail-divider"></div><button class="button button-danger button-small" data-action="logout">Keluar dari akun</button></section></section>`;
+  return `<section class="page"><div class="page-header"><div><span class="eyebrow">Tabel Pengguna</span><h1>Profil</h1><p>Kelola informasi kontak yang digunakan di akun MyKandang.</p></div></div><section class="panel" style="max-width:760px"><div class="panel-head"><div class="seller-person"><span class="profile-large-avatar">${escapeHtml(p.nama.split(/\s+/).map(part=>part[0]).slice(0,2).join('').toUpperCase())}</span><span><h3>${escapeHtml(p.nama)}</h3><span class="muted small">${escapeHtml(p.email)} · ${escapeHtml(p.role)}</span></span></div><button class="button button-secondary button-small" data-action="edit-profile">${icon('edit',14)} Ubah</button></div><div class="profile-data"><div class="data-item"><span>Nomor handphone</span><strong>${escapeHtml(p.no_telepon || 'Belum dicantumkan')}</strong></div><div class="data-item"><span>Alamat</span><strong>${escapeHtml(p.alamat || 'Belum dicantumkan')}</strong></div></div>${p.role==='staff_admin'?`<div class="detail-divider"></div><button class="button button-secondary button-small" data-page="admin">Buka panel admin ${icon('arrowRight',14)}</button>`:''}<div class="detail-divider"></div><button class="button button-danger button-small" data-action="logout">Keluar dari akun</button></section></section>`;
 }
 
 async function loadAdmin() {
-  const [summary, productRows, orders, users, chats] = await Promise.all([
-    api('/admin/ringkasan'), api('/hewan'), api('/admin/pesanan'), api('/admin/pengguna'), api('/admin/chat'),
+  const [summary, productRows, orders, users, chats, categoryRows] = await Promise.all([
+    api('/admin/ringkasan'), api('/hewan'), api('/admin/pesanan'), api('/admin/pengguna'), api('/admin/chat'), api('/kategori'),
   ]);
-  state.adminSummary=summary;adminAnimals=productRows;animals=limitCatalog(productRows);state.adminOrders=orders;state.adminUsers=users;state.adminChats=chats;
+  state.adminSummary=summary;adminAnimals=productRows;animals=orderCatalog(productRows);state.adminOrders=orders;state.adminUsers=users;state.adminChats=chats;categories=categoryRows;
 }
 
 function renderAdmin() {
   if (state.user?.role!=='staff_admin') return `<section class="page">${authRequired('Panel admin hanya tersedia untuk staff admin')}</section>`;
   const s=state.adminSummary||{};
-  return `<section class="page"><div class="page-header"><div><span class="eyebrow">Tabel pengguna, hewan, pesanan, pembayaran</span><h1>Panel admin</h1><p>Kelola katalog dan pantau transaksi database MyKandang.</p></div><button class="button" data-action="admin-new-animal">${icon('plus')} Tambah hewan</button></div>
+  return `<section class="page"><div class="page-header"><div><span class="eyebrow">Kelola Data MyKandang</span><h1>Panel admin</h1><p>Kelola katalog, pesanan, akun, dan percakapan.</p></div><button class="button" data-action="admin-new-animal">${icon('plus')} Tambah hewan</button></div>
     <div class="admin-stats"><article class="panel"><small>Pengguna</small><strong>${s.jumlah_pengguna||0}</strong></article><article class="panel"><small>Hewan</small><strong>${s.jumlah_hewan||0}</strong></article><article class="panel"><small>Pesanan Pending</small><strong>${s.pesanan_pending||0}</strong></article><article class="panel"><small>Belum dibayar</small><strong>${s.pembayaran_pending||0}</strong></article></div>
-    <section class="section"><div class="section-heading"><div><span class="eyebrow">Tabel hewan dan gambar_hewan</span><h2>Katalog</h2></div></div>${adminAnimals.length?`<div class="admin-list">${adminAnimals.map(item=>`<article class="panel admin-row"><div class="summary-thumb">${animalEmoji(item)}</div><div><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.category)} · ${item.stockCount} ekor · ${escapeHtml(item.stock)}</small><small>${formatPrice(item.price)} · ${escapeHtml(item.health)}</small></div><button class="button button-secondary button-small" data-action="admin-edit-animal" data-id="${item.id}">${icon('edit',14)} Ubah</button></article>`).join('')}</div>`:'<p class="subtle">Belum ada data hewan.</p>'}</section>
-    <section class="section"><div class="section-heading"><div><span class="eyebrow">Tabel pesanan dan pembayaran</span><h2>Transaksi</h2></div></div>${state.adminOrders.length?`<div class="admin-list">${state.adminOrders.map(order=>`<article class="panel admin-order"><div class="panel-head"><span><strong>Pesanan #${order.id_pesanan}</strong><small>${escapeHtml(order.nama_pelanggan)} · ${escapeHtml(order.email)}</small></span><strong>${formatPrice(order.total_harga)}</strong></div><p>${order.details.map(line=>`${escapeHtml(line.nama)} × ${line.kuantitas}`).join(' · ')} · ${escapeHtml(order.metode_serah_terima)}</p>${order.bukti?`<small class="muted">Bukti: ${escapeHtml(order.bukti)}</small>`:''}<div class="admin-order-controls"><label class="small">Pesanan<select class="field" data-admin-order-status="${order.id_pesanan}">${['Pending','Diproses','Selesai','Dibatalkan'].map(status=>`<option ${order.status_pesanan===status?'selected':''}>${status}</option>`).join('')}</select></label><label class="small">Pembayaran<select class="field" data-admin-payment-status="${order.id_pesanan}">${['Belum Dibayar','Berhasil'].map(status=>`<option ${order.status_pembayaran===status?'selected':''}>${status}</option>`).join('')}</select></label><button class="button button-secondary button-small" data-action="admin-save-order" data-id="${order.id_pesanan}">Simpan</button></div></article>`).join('')}</div>`:'<p class="subtle">Belum ada pesanan.</p>'}</section>
-    <section class="section"><div class="section-heading"><div><span class="eyebrow">Tabel chat dan pesan_chat</span><h2>Percakapan</h2></div></div>${state.adminChats.length?`<div class="admin-list">${state.adminChats.map(chat=>{const last=chat.messages.at(-1);return `<article class="panel admin-row"><div><strong>${escapeHtml(chat.nama)}</strong><small>${escapeHtml(chat.email)}</small><small>${escapeHtml(last?.isi_pesan||'Belum ada pesan')}</small></div><button class="button button-secondary button-small" data-action="admin-chat" data-id="${chat.id_chat}">Buka chat</button></article>`}).join('')}</div>`:'<p class="subtle">Belum ada percakapan.</p>'}</section>
-    <section class="section"><div class="section-heading"><div><span class="eyebrow">Tabel pengguna</span><h2>Akun pengguna</h2></div></div><div class="admin-list">${state.adminUsers.map(user=>`<article class="panel admin-row"><div class="profile-large-avatar">${escapeHtml(user.nama.split(/\s+/).map(part=>part[0]).slice(0,2).join('').toUpperCase())}</div><div><strong>${escapeHtml(user.nama)}</strong><small>${escapeHtml(user.email)} · ${escapeHtml(user.role)}</small></div><span class="muted small">${escapeHtml(user.no_telepon||'')}</span></article>`).join('')}</div></section>
+    <section class="section"><div class="section-heading"><div><span class="eyebrow">Tabel Kategori Hewan</span><h2>Kategori</h2></div><button class="button button-secondary button-small" data-action="admin-new-category">${icon('plus',14)} Tambah kategori</button></div>${categories.length?`<div class="admin-list">${categories.map(category=>{const used=adminAnimals.filter(item=>Number(item.id_kategori)===Number(category.id_kategori)).length;return `<article class="panel admin-row"><div class="summary-thumb">${icon('grid')}</div><div><strong>${escapeHtml(category.nama_kategori)}</strong><small>${escapeHtml(category.deskripsi||'Tanpa deskripsi')}</small><small>${used} data hewan menggunakan kategori ini</small></div><div class="admin-actions"><button class="button button-secondary button-small" data-action="admin-edit-category" data-id="${category.id_kategori}">${icon('edit',14)} Ubah</button><button class="button button-danger button-small" data-action="admin-delete-category" data-id="${category.id_kategori}">Hapus</button></div></article>`}).join('')}</div>`:'<p class="subtle">Belum ada kategori.</p>'}</section>
+    <section class="section"><div class="section-heading"><div><span class="eyebrow">Tabel Data Hewan</span><h2>Katalog</h2></div></div>${adminAnimals.length?`<div class="admin-list">${adminAnimals.map(item=>`<article class="panel admin-row"><div class="summary-thumb">${animalEmoji(item)}</div><div><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.category)} · ${item.stockCount} ekor · ${escapeHtml(item.stock)}</small><small>${formatPrice(item.price)} · ${escapeHtml(item.health)}</small></div><div class="admin-actions"><button class="button button-secondary button-small" data-action="admin-edit-animal" data-id="${item.id}">${icon('edit',14)} Ubah</button><button class="button button-danger button-small" data-action="admin-delete-animal" data-id="${item.id}">Hapus</button></div></article>`).join('')}</div>`:'<p class="subtle">Belum ada data hewan.</p>'}</section>
+    <section class="section"><div class="section-heading"><div><span class="eyebrow">Tabel Pesanan & Pembayaran</span><h2>Transaksi</h2></div></div>${state.adminOrders.length?`<div class="admin-list">${state.adminOrders.map(order=>`<article class="panel admin-order"><div class="panel-head"><span><strong>Pesanan #${order.id_pesanan}</strong><small>${escapeHtml(order.nama_pelanggan)} · ${escapeHtml(order.email)}</small></span><strong>${formatPrice(order.total_harga)}</strong></div><p>${order.details.map(line=>`${escapeHtml(line.nama)} × ${line.kuantitas}`).join(' · ')} · ${escapeHtml(order.metode_serah_terima)}</p>${order.bukti?(isGoogleDriveLink(order.bukti)?`<a class="text-link small" href="${escapeHtml(order.bukti)}" target="_blank" rel="noopener noreferrer">Buka bukti pembayaran di Google Drive</a>`:`<small class="muted">Tautan bukti bukan link Google Drive.</small>`):''}<div class="admin-order-controls"><label class="small">Pesanan<select class="field" data-admin-order-status="${order.id_pesanan}">${['Pending','Diproses','Selesai','Dibatalkan'].map(status=>`<option ${order.status_pesanan===status?'selected':''}>${status}</option>`).join('')}</select></label><label class="small">Pembayaran<select class="field" data-admin-payment-status="${order.id_pesanan}">${['Belum Dibayar','Berhasil'].map(status=>`<option ${order.status_pembayaran===status?'selected':''}>${status}</option>`).join('')}</select></label><button class="button button-secondary button-small" data-action="admin-save-order" data-id="${order.id_pesanan}">Simpan</button></div></article>`).join('')}</div>`:'<p class="subtle">Belum ada pesanan.</p>'}</section>
+    <section class="section" id="admin-conversations"><div class="section-heading"><div><span class="eyebrow">Tabel Percakapan</span><h2>Percakapan</h2></div></div>${state.adminChats.length?`<div class="admin-list">${state.adminChats.map(chat=>{const last=chat.messages.at(-1);return `<article class="panel admin-row"><div class="admin-main"><strong>${escapeHtml(chat.nama)}</strong><small>${escapeHtml(chat.email)}</small><small>${escapeHtml(last?.isi_pesan||'Belum ada pesan')}</small></div><div class="admin-actions"><button class="button button-secondary button-small" data-action="admin-chat" data-id="${chat.id_chat}">Buka chat</button><button class="button button-danger button-small" data-action="admin-delete-chat" data-id="${chat.id_chat}">Hapus</button></div></article>`}).join('')}</div>`:'<p class="subtle">Belum ada percakapan.</p>'}</section>
+    <section class="section"><div class="section-heading"><div><span class="eyebrow">Tabel Pengguna</span><h2>Akun pengguna</h2></div></div><div class="admin-list">${state.adminUsers.map(user=>`<article class="panel admin-row"><div class="profile-large-avatar">${escapeHtml(user.nama.split(/\s+/).map(part=>part[0]).slice(0,2).join('').toUpperCase())}</div><div><strong>${escapeHtml(user.nama)}</strong><small>${escapeHtml(user.email)} · ${escapeHtml(user.role)}</small></div><div class="admin-actions"><span class="muted small">${escapeHtml(user.no_telepon||'')}</span>${user.role==='customer'?`<button class="button button-danger button-small" data-action="admin-delete-user" data-id="${user.id_pengguna}">Hapus akun</button>`:`<span class="muted small">Admin dilindungi</span>`}</div></article>`).join('')}</div></section>
   </section>`;
 }
 
 function renderAdminAnimalModal(item=null) {
   const editing=Boolean(item);
-  openModal(editing?'Ubah data hewan':'Tambah hewan','Informasi disimpan pada tabel hewan; foto utama pada tabel gambar_hewan.',`<form data-form="admin-animal" data-id="${item?.id||''}"><div class="admin-form-grid">
+  openModal(editing?'Ubah data hewan':'Tambah hewan','Perbarui detail dan foto utama hewan.',`<form data-form="admin-animal" data-id="${item?.id||''}"><div class="admin-form-grid">
     <label class="field-group">Kategori<select class="field" name="id_kategori" required>${categories.map(category=>`<option value="${category.id_kategori}" ${Number(category.id_kategori)===Number(item?.id_kategori)?'selected':''}>${escapeHtml(category.nama_kategori)}</option>`).join('')}</select></label>
     <label class="field-group">Nama<input class="field" name="nama" value="${escapeHtml(item?.name||'')}" required /></label>
     <label class="field-group">Jenis<input class="field" name="jenis" value="${escapeHtml(item?.kind||'')}" /></label><label class="field-group">Ras<input class="field" name="ras" value="${escapeHtml(item?.breed||'')}" /></label>
@@ -361,6 +372,15 @@ function renderAdminAnimalModal(item=null) {
     <label class="field-group">Harga (Rp)<input class="field" name="harga" type="number" min="0" step="1" value="${item?.price??''}" required /></label><label class="field-group">Stok<input class="field" name="stok" type="number" min="0" step="1" value="${item?.stockCount??0}" required /></label>
     <label class="field-group">Status<select class="field" name="status">${['Tersedia','Habis','Terjual'].map(status=>`<option ${item?.status===status?'selected':''}>${status}</option>`).join('')}</select></label><label class="field-group">URL foto utama<input class="field" name="gambar_url" type="url" value="${escapeHtml(item?.images?.find(image=>image.utama)?.url||'')}" /></label>
     <label class="field-group admin-description">Deskripsi<textarea class="field" name="deskripsi">${escapeHtml(item?.description||'')}</textarea></label></div><div class="modal-footer"><button type="button" class="button button-secondary" data-action="close-modal">Batal</button><div class="right"><button class="button" type="submit">Simpan</button></div></div></form>`,'',true);
+}
+
+function renderAdminCategoryModal(category=null) {
+  const editing=Boolean(category);
+  openModal(editing?'Ubah kategori':'Tambah kategori','Kategori dipakai untuk mengelompokkan hewan di katalog.',`<form data-form="admin-category" data-id="${category?.id_kategori||''}">
+    <label class="field-group"><span class="form-label">Nama kategori</span><input class="field" name="nama_kategori" value="${escapeHtml(category?.nama_kategori||'')}" maxlength="100" required /></label>
+    <label class="field-group"><span class="form-label">Deskripsi <small>(opsional)</small></span><textarea class="field" name="deskripsi" maxlength="500">${escapeHtml(category?.deskripsi||'')}</textarea></label>
+    <div class="modal-footer"><button type="button" class="button button-secondary" data-action="close-modal">Batal</button><div class="right"><button class="button" type="submit">Simpan kategori</button></div></div>
+  </form>`);
 }
 
 function renderCompareBar() {
@@ -468,7 +488,7 @@ async function refreshPrivateData() {
 async function loadApp() {
   try {
     [categories, animals] = await Promise.all([api('/kategori'), api('/hewan')]);
-    animals = limitCatalog(animals);
+    animals = orderCatalog(animals);
     if (state.token) {
       try { await refreshPrivateData(); }
       catch { state.token=''; state.user=null; state.profile=null; sessionStorage.removeItem('mykandang-token'); }
@@ -491,7 +511,7 @@ function showToast(message) {
   window.setTimeout(() => item.remove(), 2800);
 }
 
-function authRequired(message) { return `<div class="empty-state"><div class="empty-illustration">🔐</div><h3>${message}</h3><p>Masuk atau daftar agar data bisa disimpan ke database.</p><button class="button" data-action="auth">Masuk atau daftar</button></div>`; }
+function authRequired(message) { return `<div class="empty-state"><div class="empty-illustration">🔐</div><h3>${message}</h3><p>Masuk atau daftar untuk menyimpan pesanan, keranjang, dan hewan pilihanmu.</p><button class="button" data-action="auth">Masuk atau daftar</button></div>`; }
 
 async function toggleSaved(id) {
   if (!state.user) { state.pendingAuthAction={type:'save',id:Number(id)};openAuthModal();return; }
@@ -561,12 +581,12 @@ function clearFilterChip(label) {
 
 function renderChatModal(chat=null,isAdmin=false) {
   const messages=chat?.messages||[];
-  openModal(isAdmin?`Chat · ${escapeHtml(chat?.nama||'Pengguna')}`:'Chat MyKandang',isAdmin?`Percakapan #${chat?.id_chat} dari tabel chat.`:'Riwayat pesan tersimpan pada akunmu.',`<div class="chat-window"><div class="chat-day">Riwayat pesan</div>${messages.map(msg=>`<div class="chat-bubble ${Number(msg.id_pengirim)===Number(state.user?.id_pengguna)?'mine':''}">${escapeHtml(msg.isi_pesan)}<small>${new Date(msg.waktu_kirim).toLocaleString('id-ID')}</small></div>`).join('')}${messages.length?'':'<p class="small muted">Belum ada pesan.</p>'}</div><form class="chat-form" data-form="chat" data-chat-id="${chat?.id_chat||''}" data-admin="${isAdmin?'true':'false'}"><input class="field" name="message" placeholder="Tulis pesan…" autocomplete="off" required /><button class="button" type="submit" aria-label="Kirim pesan">${icon('arrowRight',17)}</button></form>`);
+  openModal(isAdmin?`Chat · ${escapeHtml(chat?.nama||'Pengguna')}`:'Chat MyKandang',isAdmin?`Percakapan #${chat?.id_chat}.`:'Riwayat pesan tersimpan pada akunmu.',`<div class="chat-window"><div class="chat-day">Riwayat pesan</div>${messages.map(msg=>`<div class="chat-bubble ${Number(msg.id_pengirim)===Number(state.user?.id_pengguna)?'mine':''}">${escapeHtml(msg.isi_pesan)}<small>${new Date(msg.waktu_kirim).toLocaleString('id-ID')}</small></div>`).join('')}${messages.length?'':'<p class="small muted">Belum ada pesan.</p>'}</div><form class="chat-form" data-form="chat" data-chat-id="${chat?.id_chat||''}" data-admin="${isAdmin?'true':'false'}"><input class="field" name="message" placeholder="Tulis pesan…" autocomplete="off" required /><button class="button" type="submit" aria-label="Kirim pesan">${icon('arrowRight',17)}</button></form>`);
 }
 
 function renderProfileEditModal() {
   const p=state.profile;
-  openModal('Ubah profil','Kolom ini disimpan pada tabel pengguna.',`<form data-form="profile"><div class="field-group" style="margin:0"><label class="form-label">Nama</label><input class="field" name="nama" value="${escapeHtml(p.nama)}" required /></div><div class="field-group"><label class="form-label">Email</label><input class="field" value="${escapeHtml(p.email)}" disabled /></div><div class="field-group"><label class="form-label">Nomor telepon</label><input class="field" name="no_telepon" value="${escapeHtml(p.no_telepon||'')}" /></div><div class="field-group"><label class="form-label">Alamat</label><textarea class="field" name="alamat">${escapeHtml(p.alamat||'')}</textarea></div><div class="modal-footer" style="padding:17px 0 0;margin-top:17px"><span></span><div class="right"><button type="button" class="button button-secondary" data-action="close-modal">Batal</button><button class="button" type="submit">Simpan</button></div></div></form>`);
+  openModal('Ubah profil','Perbarui nama dan informasi kontak akunmu.',`<form data-form="profile"><div class="field-group" style="margin:0"><label class="form-label">Nama</label><input class="field" name="nama" value="${escapeHtml(p.nama)}" required /></div><div class="field-group"><label class="form-label">Email</label><input class="field" value="${escapeHtml(p.email)}" disabled /></div><div class="field-group"><label class="form-label">Nomor telepon</label><input class="field" name="no_telepon" value="${escapeHtml(p.no_telepon||'')}" /></div><div class="field-group"><label class="form-label">Alamat</label><textarea class="field" name="alamat">${escapeHtml(p.alamat||'')}</textarea></div><div class="modal-footer" style="padding:17px 0 0;margin-top:17px"><span></span><div class="right"><button type="button" class="button button-secondary" data-action="close-modal">Batal</button><button class="button" type="submit">Simpan</button></div></div></form>`);
 }
 
 function startCheckout(id) {
@@ -588,15 +608,16 @@ async function placeOrder() {
     const method=state.checkout.method || 'Kirim Kurir';
     const address=method==='Kirim Kurir' ? (document.getElementById('order-address')?.value.trim() || '') : null;
     const items=state.checkoutItems;
-    const order=await api('/pesanan',{method:'POST',body:JSON.stringify({metode_serah_terima:method,alamat_pengiriman:address,items})});
     const paymentMethod=document.getElementById('payment-method')?.value;
     const paymentProof=document.getElementById('payment-proof')?.value.trim()||null;
+    if (paymentProof && !isGoogleDriveLink(paymentProof)) { showToast('Tempel tautan berbagi Google Drive yang valid.');document.getElementById('payment-proof')?.focus();return; }
+    const order=await api('/pesanan',{method:'POST',body:JSON.stringify({metode_serah_terima:method,alamat_pengiriman:address,items})});
     if (paymentMethod) await api(`/pesanan/${order.id_pesanan}/pembayaran`,{method:'POST',body:JSON.stringify({metode:paymentMethod,bukti:paymentProof})});
     await refreshPrivateData();
     state.currentOrder=await api(`/pesanan/${order.id_pesanan}`);
     state.currentOrderId=order.id_pesanan;
     setPage('order-detail');
-    showToast('Pesanan tersimpan di database.');
+    showToast('Pesanan berhasil disimpan.');
   } catch(error) { showToast(error.message); }
 }
 
@@ -614,6 +635,7 @@ async function savePayment(id) {
   try {
     const metode=document.getElementById('payment-method')?.value;
     const bukti=document.getElementById('payment-proof')?.value.trim()||null;
+    if (bukti && !isGoogleDriveLink(bukti)) { showToast('Tempel tautan berbagi Google Drive yang valid.');document.getElementById('payment-proof')?.focus();return; }
     await api(`/pesanan/${id}/pembayaran`,{method:'POST',body:JSON.stringify({metode,bukti})});
     state.currentOrder=await api(`/pesanan/${id}`);
     state.orders=await api('/pesanan'); render(); showToast('Metode pembayaran tersimpan.');
@@ -685,7 +707,31 @@ document.addEventListener('click', async event => {
   if (action==='compare-toggle') return;
   if (action==='filters') { renderFiltersModal(); return; }
   if (action==='admin-new-animal') { renderAdminAnimalModal(); return; }
-  if (action==='admin-edit-animal') { renderAdminAnimalModal(animalById(id)); return; }
+  if (action==='admin-edit-animal') { renderAdminAnimalModal(adminAnimals.find(item=>String(item.id)===String(id))); return; }
+  if (action==='admin-delete-animal') {
+    const item=adminAnimals.find(animal=>String(animal.id)===String(id));
+    openModal('Hapus data hewan?',`Data ${item?.name||'hewan ini'} akan dihapus jika belum memiliki riwayat pesanan atau ulasan.`,
+      `<p class="confirm-copy">Hewan yang sudah muncul di transaksi atau ulasan akan dipertahankan agar riwayat tetap utuh.</p><div class="modal-footer" style="padding:17px 0 0;margin-top:17px"><button class="button button-secondary" data-action="close-modal">Batal</button><div class="right"><button class="button button-danger" data-action="confirm-delete-animal" data-id="${id}">Hapus hewan</button></div></div>`);
+    return;
+  }
+  if (action==='admin-new-category') { renderAdminCategoryModal(); return; }
+  if (action==='admin-edit-category') { renderAdminCategoryModal(categories.find(category=>String(category.id_kategori)===String(id))); return; }
+  if (action==='admin-delete-category') {
+    const category=categories.find(item=>String(item.id_kategori)===String(id));
+    openModal('Hapus kategori?',`Kategori ${category?.nama_kategori||'ini'} hanya bisa dihapus jika belum dipakai hewan.`,
+      `<p class="confirm-copy">Jika masih digunakan, data kategori akan tetap dipertahankan.</p><div class="modal-footer" style="padding:17px 0 0;margin-top:17px"><button class="button button-secondary" data-action="close-modal">Batal</button><div class="right"><button class="button button-danger" data-action="confirm-delete-category" data-id="${id}">Hapus kategori</button></div></div>`);
+    return;
+  }
+  if (action==='confirm-delete-animal') {
+    try { await api(`/admin/hewan/${id}`,{method:'DELETE'});await loadAdmin();closeModal();render();showToast('Data hewan dihapus.'); }
+    catch(error) { closeModal();showToast(error.message); }
+    return;
+  }
+  if (action==='confirm-delete-category') {
+    try { await api(`/admin/kategori/${id}`,{method:'DELETE'});await loadAdmin();closeModal();render();showToast('Kategori dihapus.'); }
+    catch(error) { closeModal();showToast(error.message); }
+    return;
+  }
   if (action==='admin-save-order') {
     const status_pesanan=document.querySelector(`[data-admin-order-status="${id}"]`)?.value;
     const status_pembayaran=document.querySelector(`[data-admin-payment-status="${id}"]`)?.value;
@@ -696,6 +742,28 @@ document.addEventListener('click', async event => {
   if (action==='admin-chat') {
     try { const chat=await api(`/admin/chat/${id}`);renderChatModal(chat,true); }
     catch(error) { showToast(error.message); }
+    return;
+  }
+  if (action==='admin-delete-chat') {
+    const chat=state.adminChats.find(item=>String(item.id_chat)===String(id));
+    openModal('Hapus percakapan?',`Percakapan dengan ${chat?.nama||'pelanggan ini'} akan dihapus permanen.`,
+      `<p class="confirm-copy">Semua pesan di percakapan ini ikut terhapus. Akun pelanggan tetap tersimpan.</p><div class="modal-footer" style="padding:17px 0 0;margin-top:17px"><button class="button button-secondary" data-action="close-modal">Batal</button><div class="right"><button class="button button-danger" data-action="confirm-delete-chat" data-id="${id}">Hapus percakapan</button></div></div>`);
+    return;
+  }
+  if (action==='confirm-delete-chat') {
+    try { await api(`/admin/chat/${id}`,{method:'DELETE'});await loadAdmin();closeModal();render();showToast('Percakapan dihapus.'); }
+    catch(error) { closeModal();showToast(error.message); }
+    return;
+  }
+  if (action==='admin-delete-user') {
+    const user=state.adminUsers.find(item=>String(item.id_pengguna)===String(id));
+    openModal('Hapus akun pelanggan?',`Akun ${user?.nama||'pelanggan ini'} beserta data terkaitnya akan dihapus permanen.`,
+      `<p class="confirm-copy">Riwayat pesanan, pembayaran, ulasan, percakapan, keranjang, dan wishlist akun ini ikut terhapus. Akun admin tidak dapat dihapus.</p><div class="modal-footer" style="padding:17px 0 0;margin-top:17px"><button class="button button-secondary" data-action="close-modal">Batal</button><div class="right"><button class="button button-danger" data-action="confirm-delete-user" data-id="${id}">Hapus akun</button></div></div>`);
+    return;
+  }
+  if (action==='confirm-delete-user') {
+    try { await api(`/admin/pengguna/${id}`,{method:'DELETE'});await loadAdmin();closeModal();render();showToast('Akun dan data terkait dihapus.'); }
+    catch(error) { closeModal();showToast(error.message); }
     return;
   }
   if (action==='filter-option') { applyFilterOption(target); return; }
@@ -709,9 +777,18 @@ document.addEventListener('click', async event => {
   if (action==='checkout-cart') { checkoutCart(); return; }
   if (action==='add-cart') { await addToCart(id); return; }
   if (action==='remove-cart') { await removeFromCart(id); return; }
-  if (action==='chat') { if (!state.user) { state.pendingAuthAction={type:'chat'};openAuthModal();return; } try { renderChatModal(await api('/chat')); } catch(error) { showToast(error.message); } return; }
+  if (action==='chat') {
+    if (!state.user) { state.pendingAuthAction={type:'chat'};openAuthModal();return; }
+    if (state.user.role==='staff_admin') {
+      try { await loadAdmin();setPage('admin',{}, {scrollTarget:'admin-conversations'}); }
+      catch(error) { showToast(error.message); }
+      return;
+    }
+    try { renderChatModal(await api('/chat')); } catch(error) { showToast(error.message); }
+    return;
+  }
   if (action==='place-order') { await placeOrder(); return; }
-  if (action==='cancel-order') { openModal('Batalkan pesanan?','Status Pending akan diubah menjadi Dibatalkan. Stok akan dikembalikan.',`<p class="confirm-copy">Pembatalan akan dicatat pada tabel pesanan.</p><div class="modal-footer" style="padding:17px 0 0;margin-top:17px"><button class="button button-secondary" data-action="close-modal">Kembali</button><div class="right"><button class="button button-danger" data-action="confirm-cancel" data-id="${id}">Batalkan</button></div></div>`); return; }
+  if (action==='cancel-order') { openModal('Batalkan pesanan?','Status Pending akan diubah menjadi Dibatalkan. Stok akan dikembalikan.',`<p class="confirm-copy">Pembatalan akan tercatat pada riwayat pesanan.</p><div class="modal-footer" style="padding:17px 0 0;margin-top:17px"><button class="button button-secondary" data-action="close-modal">Kembali</button><div class="right"><button class="button button-danger" data-action="confirm-cancel" data-id="${id}">Batalkan</button></div></div>`); return; }
   if (action==='confirm-cancel') { closeModal(); await cancelOrder(id); return; }
   if (action==='payment') { await savePayment(id); return; }
   if (action==='submit-review') {
@@ -799,6 +876,16 @@ document.addEventListener('submit', async event => {
     try {
       await api(id?`/admin/hewan/${id}`:'/admin/hewan',{method:id?'PATCH':'POST',body:JSON.stringify(data)});
       await loadAdmin();closeModal();render();showToast(id?'Data hewan diperbarui.':'Hewan ditambahkan.');
+    } catch(error) { showToast(error.message); }
+    return;
+  }
+  if (form.matches('[data-form="admin-category"]')) {
+    event.preventDefault();
+    const data=Object.fromEntries(new FormData(form).entries());
+    const id=form.dataset.id;
+    try {
+      await api(id?`/admin/kategori/${id}`:'/admin/kategori',{method:id?'PATCH':'POST',body:JSON.stringify(data)});
+      await loadAdmin();closeModal();render();showToast(id?'Kategori diperbarui.':'Kategori ditambahkan.');
     } catch(error) { showToast(error.message); }
     return;
   }

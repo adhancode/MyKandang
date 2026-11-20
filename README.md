@@ -25,10 +25,12 @@ Jangan unggah `backend/.env` atau kata sandi database ke GitHub. Token login mem
 - Wishlist: `wishlist`.
 - Keranjang dan checkout dengan validasi stok: `keranjang`, `detail_keranjang`.
 - Pesanan, item pesanan, pembatalan, dan stok: `pesanan`, `detail_pesanan`.
-- Metode, lokasi/link bukti, dan status pembayaran: `pembayaran`. Konfirmasi tetap dilakukan admin secara manual; belum ada payment gateway atau unggah berkas bukti.
+- Metode, tautan bukti pembayaran Google Drive, dan status pembayaran: `pembayaran`. Konfirmasi tetap dilakukan admin secara manual; belum ada payment gateway atau unggah berkas langsung.
 - Ulasan rating dan komentar: `ulasan`. Ulasan hanya dapat dikirim untuk item pada pesanan selesai.
 - Pesan pengguna dan balasan admin, termasuk status baca: `chat`, `pesan_chat`.
-- Panel `staff_admin`: mengelola data hewan dan foto utama, melihat akun/pesanan/chat, serta memperbarui status pesanan dan pembayaran.
+- CRUD kategori (`kategori_hewan`) dan katalog hewan (`hewan`), termasuk foto utama. Penghapusan kategori diblokir saat masih dipakai; hewan yang sudah punya transaksi atau ulasan dipertahankan agar riwayat tetap utuh.
+- Item keranjang (`detail_keranjang`) dapat ditambahkan, dibaca, diubah jumlahnya, dan dihapus oleh pengguna.
+- Panel `staff_admin`: mengelola kategori/hewan, transaksi, dan percakapan; akun pelanggan serta seluruh data terkaitnya dapat dihapus dengan konfirmasi. Akun admin dilindungi dari penghapusan.
 
 Database belum memiliki tabel penjual/UMKM, alamat terpisah, jadwal serah-terima, notifikasi, atau payment gateway. Karena itu UI tidak menyimpan informasi tersebut. Kolom umur pada SQL hanya bertipe angka; aplikasi menganggap nilainya dalam bulan sesuai data contoh proyek.
 

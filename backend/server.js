@@ -70,6 +70,13 @@ function parseNumber(value, label, { min = 0, optional = false, integer = false 
   return number;
 }
 
+function isGoogleDriveLink(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' && url.hostname === 'drive.google.com' && !url.port && !url.username && !url.password && url.pathname !== '/';
+  } catch { return false; }
+}
+
 function publicAnimal(row) {
   return {
     id: row.id_hewan,
@@ -149,6 +156,44 @@ app.get('/api/kategori', asyncRoute(async (_req, res) => {
   res.json(result.rows);
 }));
 
+app.post('/api/admin/kategori', requireUser, requireAdmin, asyncRoute(async (req, res) => {
+  const nama = req.body?.nama_kategori?.trim();
+  const deskripsi = req.body?.deskripsi?.trim() || null;
+  if (!nama) return fail(res,400,'Nama kategori wajib diisi.');
+  const result = await db.query(
+    'INSERT INTO kategori_hewan (nama_kategori,deskripsi) VALUES ($1,$2) RETURNING id_kategori,nama_kategori,deskripsi',
+    [nama,deskripsi]
+  );
+  res.status(201).json(result.rows[0]);
+}));
+
+app.patch('/api/admin/kategori/:id', requireUser, requireAdmin, asyncRoute(async (req, res) => {
+  const nama = req.body?.nama_kategori?.trim();
+  const deskripsi = req.body?.deskripsi?.trim() || null;
+  if (!nama) return fail(res,400,'Nama kategori wajib diisi.');
+  const result = await db.query(
+    'UPDATE kategori_hewan SET nama_kategori=$1,deskripsi=$2 WHERE id_kategori=$3 RETURNING id_kategori,nama_kategori,deskripsi',
+    [nama,deskripsi,req.params.id]
+  );
+  if (!result.rows[0]) return fail(res,404,'Kategori tidak ditemukan.');
+  res.json(result.rows[0]);
+}));
+
+app.delete('/api/admin/kategori/:id', requireUser, requireAdmin, asyncRoute(async (req, res) => {
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+    const category = await client.query('SELECT id_kategori FROM kategori_hewan WHERE id_kategori=$1 FOR UPDATE',[req.params.id]);
+    if (!category.rows[0]) { await client.query('ROLLBACK'); return fail(res,404,'Kategori tidak ditemukan.'); }
+    const animalsInCategory = await client.query('SELECT 1 FROM hewan WHERE id_kategori=$1 LIMIT 1',[req.params.id]);
+    if (animalsInCategory.rowCount) { await client.query('ROLLBACK'); return fail(res,409,'Kategori masih dipakai oleh data hewan. Pindahkan atau hapus hewannya terlebih dahulu.'); }
+    await client.query('DELETE FROM kategori_hewan WHERE id_kategori=$1',[req.params.id]);
+    await client.query('COMMIT');
+    res.status(204).end();
+  } catch (error) { await client.query('ROLLBACK'); throw error; }
+  finally { client.release(); }
+}));
+
 app.get('/api/hewan', asyncRoute(async (req, res) => {
   const values = [];
   const where = [];
@@ -213,6 +258,31 @@ app.get('/api/admin/pengguna', requireUser, requireAdmin, asyncRoute(async (_req
   res.json(result.rows);
 }));
 
+app.delete('/api/admin/pengguna/:id', requireUser, requireAdmin, asyncRoute(async (req, res) => {
+  const userId = parseNumber(req.params.id,'Akun',{min:1,integer:true});
+  if (userId === req.user.id_pengguna) return fail(res,409,'Akun admin yang sedang digunakan tidak dapat dihapus.');
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+    const user = await client.query('SELECT id_pengguna,role FROM pengguna WHERE id_pengguna=$1 FOR UPDATE',[userId]);
+    if (!user.rows[0]) { await client.query('ROLLBACK'); return fail(res,404,'Akun tidak ditemukan.'); }
+    if (user.rows[0].role === 'staff_admin') { await client.query('ROLLBACK'); return fail(res,409,'Akun staff admin dilindungi dan tidak dapat dihapus.'); }
+    await client.query(
+      'DELETE FROM ulasan WHERE id_pengguna=$1 OR id_pesanan IN (SELECT id_pesanan FROM pesanan WHERE id_pengguna=$1)',
+      [userId]
+    );
+    await client.query('DELETE FROM pesan_chat WHERE id_pengirim=$1',[userId]);
+    await client.query('DELETE FROM chat WHERE id_pengguna=$1',[userId]);
+    await client.query('DELETE FROM pesanan WHERE id_pengguna=$1',[userId]);
+    await client.query('DELETE FROM wishlist WHERE id_pengguna=$1',[userId]);
+    await client.query('DELETE FROM keranjang WHERE id_pengguna=$1',[userId]);
+    await client.query('DELETE FROM pengguna WHERE id_pengguna=$1',[userId]);
+    await client.query('COMMIT');
+    res.status(204).end();
+  } catch (error) { await client.query('ROLLBACK'); throw error; }
+  finally { client.release(); }
+}));
+
 app.get('/api/admin/pesanan', requireUser, requireAdmin, asyncRoute(async (_req, res) => {
   const result = await db.query(
     `SELECT p.*,u.nama AS nama_pelanggan,u.email,
@@ -274,6 +344,31 @@ app.patch('/api/admin/hewan/:id', requireUser, requireAdmin, asyncRoute(async (r
     }
     await client.query('COMMIT');
     res.json({ id_hewan:result.rows[0].id_hewan });
+  } catch (error) { await client.query('ROLLBACK'); throw error; }
+  finally { client.release(); }
+}));
+
+app.delete('/api/admin/hewan/:id', requireUser, requireAdmin, asyncRoute(async (req, res) => {
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+    const animal = await client.query('SELECT id_hewan FROM hewan WHERE id_hewan=$1 FOR UPDATE',[req.params.id]);
+    if (!animal.rows[0]) { await client.query('ROLLBACK'); return fail(res,404,'Hewan tidak ditemukan.'); }
+    const history = await client.query(
+      `SELECT EXISTS(SELECT 1 FROM detail_pesanan WHERE id_hewan=$1)
+           OR EXISTS(SELECT 1 FROM ulasan WHERE id_hewan=$1) AS has_history`,
+      [req.params.id]
+    );
+    if (history.rows[0].has_history) {
+      await client.query('ROLLBACK');
+      return fail(res,409,'Hewan memiliki riwayat pesanan atau ulasan, sehingga tidak dapat dihapus. Ubah stok/statusnya menjadi Habis atau Terjual.');
+    }
+    await client.query('DELETE FROM detail_keranjang WHERE id_hewan=$1',[req.params.id]);
+    await client.query('DELETE FROM wishlist WHERE id_hewan=$1',[req.params.id]);
+    await client.query('DELETE FROM gambar_hewan WHERE id_hewan=$1',[req.params.id]);
+    await client.query('DELETE FROM hewan WHERE id_hewan=$1',[req.params.id]);
+    await client.query('COMMIT');
+    res.status(204).end();
   } catch (error) { await client.query('ROLLBACK'); throw error; }
   finally { client.release(); }
 }));
@@ -490,9 +585,10 @@ app.post('/api/pesanan/:id/pembayaran', requireUser, asyncRoute(async (req, res)
   const metode = req.body?.metode;
   if (!metode?.trim()) return fail(res,400,'Metode pembayaran wajib dipilih.');
   const bukti = req.body?.bukti?.trim() || null;
-  if (bukti && bukti.length>255) return fail(res,400,'Link atau lokasi bukti maksimal 255 karakter.');
+  if (bukti && bukti.length>255) return fail(res,400,'Tautan Google Drive maksimal 255 karakter.');
+  if (bukti && !isGoogleDriveLink(bukti)) return fail(res,400,'Gunakan tautan berbagi Google Drive yang diawali https://drive.google.com/.');
   const result = await db.query(
-    `UPDATE pembayaran pb SET metode=$1,bukti=COALESCE($2,pb.bukti),status='Belum Dibayar'
+    `UPDATE pembayaran pb SET metode=$1,bukti=$2,status='Belum Dibayar'
      FROM pesanan p WHERE pb.id_pesanan=p.id_pesanan AND p.id_pengguna=$3 AND p.id_pesanan=$4
        AND pb.status='Belum Dibayar' AND p.status_pesanan<>'Dibatalkan'
      RETURNING pb.id_pembayaran,pb.id_pesanan,pb.jumlah,pb.metode,pb.status,pb.tanggal_bayar,pb.bukti`,
@@ -544,6 +640,21 @@ app.get('/api/admin/chat', requireUser, requireAdmin, asyncRoute(async (_req, re
      GROUP BY c.id_chat,u.id_pengguna ORDER BY MAX(m.waktu_kirim) DESC NULLS LAST,c.id_chat DESC`
   );
   res.json(result.rows);
+}));
+
+app.delete('/api/admin/chat/:id', requireUser, requireAdmin, asyncRoute(async (req, res) => {
+  const chatId = parseNumber(req.params.id,'Percakapan',{min:1,integer:true});
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+    const chat = await client.query('SELECT id_chat FROM chat WHERE id_chat=$1 FOR UPDATE',[chatId]);
+    if (!chat.rows[0]) { await client.query('ROLLBACK'); return fail(res,404,'Percakapan tidak ditemukan.'); }
+    await client.query('DELETE FROM pesan_chat WHERE id_chat=$1',[chatId]);
+    await client.query('DELETE FROM chat WHERE id_chat=$1',[chatId]);
+    await client.query('COMMIT');
+    res.status(204).end();
+  } catch (error) { await client.query('ROLLBACK'); throw error; }
+  finally { client.release(); }
 }));
 
 app.get('/api/admin/chat/:id', requireUser, requireAdmin, asyncRoute(async (req, res) => {

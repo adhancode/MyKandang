@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
+const fs = require('fs');
 const crypto = require('crypto');
 const { promisify } = require('util');
 const db = require('./db');
@@ -77,6 +78,58 @@ function isGoogleDriveLink(value) {
   } catch { return false; }
 }
 
+let featureSchemaPromise;
+async function ensureFeatureSchema() {
+  if (!featureSchemaPromise) {
+    featureSchemaPromise = (async () => {
+      const sql = fs.readFileSync(path.join(__dirname, 'feature-schema.sql'), 'utf8');
+      const client = await db.connect();
+      try {
+        await client.query('BEGIN');
+        await client.query(sql);
+        await client.query('COMMIT');
+      } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+      } finally {
+        client.release();
+      }
+    })().catch(error => {
+      featureSchemaPromise = null;
+      throw error;
+    });
+  }
+  return featureSchemaPromise;
+}
+
+async function createNotification(queryable, userId, title, message, type='info', data={}) {
+  if (!userId) return;
+  await queryable.query(
+    'INSERT INTO notifikasi(id_pengguna,judul,pesan,jenis,data) VALUES ($1,$2,$3,$4,$5::jsonb)',
+    [userId,title,message,type,JSON.stringify(data)]
+  );
+}
+
+async function createOptionalNotification(queryable, userId, title, message, type='info', data={}) {
+  await queryable.query('SAVEPOINT optional_notification');
+  try {
+    await createNotification(queryable,userId,title,message,type,data);
+    await queryable.query('RELEASE SAVEPOINT optional_notification');
+  } catch (error) {
+    await queryable.query('ROLLBACK TO SAVEPOINT optional_notification');
+    await queryable.query('RELEASE SAVEPOINT optional_notification');
+    console.error('Notifikasi tambahan gagal disimpan:',error.message);
+  }
+}
+
+function parseHandoffSchedule(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) throw Object.assign(new Error('Jadwal serah-terima tidak valid.'), { status: 400 });
+  if (date.getTime() < Date.now() + 60 * 60 * 1000) throw Object.assign(new Error('Jadwal serah-terima harus minimal satu jam dari sekarang.'), { status: 400 });
+  return date.toISOString();
+}
+
 function publicAnimal(row) {
   return {
     id: row.id_hewan,
@@ -92,6 +145,7 @@ function publicAnimal(row) {
     health: row.kondisi_kesehatan || 'Belum dicantumkan',
     price: Number(row.harga),
     stockCount: Number(row.stok),
+    id_penjual: row.id_penjual || null,
     stock: row.stok > 0 && !['Terjual', 'Habis'].includes(row.status) ? 'Tersedia' : row.status === 'Terjual' ? 'Terjual' : 'Habis',
     description: row.deskripsi || '',
     status: row.status,
@@ -242,6 +296,220 @@ app.patch('/api/profil', requireUser, asyncRoute(async (req, res) => {
   res.json(result.rows[0]);
 }));
 
+app.get('/api/alamat', requireUser, asyncRoute(async (req, res) => {
+  await ensureFeatureSchema();
+  const result = await db.query(
+    'SELECT id_alamat,label,nama_penerima,no_telepon,alamat,utama,dibuat FROM alamat_pengguna WHERE id_pengguna=$1 ORDER BY utama DESC,dibuat DESC,id_alamat DESC',
+    [req.user.id_pengguna]
+  );
+  res.json(result.rows);
+}));
+
+app.post('/api/alamat', requireUser, asyncRoute(async (req, res) => {
+  await ensureFeatureSchema();
+  const label=req.body?.label?.trim()||'Alamat rumah';
+  const nama=req.body?.nama_penerima?.trim()||'';
+  const phone=req.body?.no_telepon?.trim()||null;
+  const address=req.body?.alamat?.trim()||'';
+  if(!nama||!address)return fail(res,400,'Nama penerima dan alamat wajib diisi.');
+  if(nama.length>100||address.length>255||String(phone||'').length>20||label.length>60)return fail(res,400,'Label, kontak, atau alamat melebihi batas karakter.');
+  const client=await db.connect();
+  try{
+    await client.query('BEGIN');
+    const count=await client.query('SELECT COUNT(*)::int AS jumlah FROM alamat_pengguna WHERE id_pengguna=$1',[req.user.id_pengguna]);
+    const isDefault=req.body?.utama===true||count.rows[0].jumlah===0;
+    if(isDefault)await client.query('UPDATE alamat_pengguna SET utama=FALSE WHERE id_pengguna=$1',[req.user.id_pengguna]);
+    const result=await client.query(
+      'INSERT INTO alamat_pengguna(id_pengguna,label,nama_penerima,no_telepon,alamat,utama) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id_alamat,label,nama_penerima,no_telepon,alamat,utama,dibuat',
+      [req.user.id_pengguna,label,nama,phone,address,isDefault]
+    );
+    if(isDefault)await client.query('UPDATE pengguna SET alamat=$1,no_telepon=COALESCE($2,no_telepon) WHERE id_pengguna=$3',[address,phone,req.user.id_pengguna]);
+    await client.query('COMMIT');
+    res.status(201).json(result.rows[0]);
+  }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
+}));
+
+app.patch('/api/alamat/:id', requireUser, asyncRoute(async (req, res) => {
+  await ensureFeatureSchema();
+  const client=await db.connect();
+  try{
+    await client.query('BEGIN');
+    const existing=await client.query('SELECT * FROM alamat_pengguna WHERE id_alamat=$1 AND id_pengguna=$2 FOR UPDATE',[req.params.id,req.user.id_pengguna]);
+    if(!existing.rows[0]){await client.query('ROLLBACK');return fail(res,404,'Alamat tidak ditemukan.');}
+    const current=existing.rows[0];
+    const label=req.body?.label===undefined?current.label:(req.body.label.trim()||'Alamat rumah');
+    const nama=req.body?.nama_penerima===undefined?current.nama_penerima:req.body.nama_penerima.trim();
+    const phone=req.body?.no_telepon===undefined?current.no_telepon:(req.body.no_telepon.trim()||null);
+    const address=req.body?.alamat===undefined?current.alamat:req.body.alamat.trim();
+    const isDefault=req.body?.utama===undefined?current.utama:req.body.utama===true||req.body.utama==='true';
+    if(!nama||!address){await client.query('ROLLBACK');return fail(res,400,'Nama penerima dan alamat wajib diisi.');}
+    if(nama.length>100||address.length>255||String(phone||'').length>20||label.length>60){await client.query('ROLLBACK');return fail(res,400,'Label, kontak, atau alamat melebihi batas karakter.');}
+    if(isDefault)await client.query('UPDATE alamat_pengguna SET utama=FALSE WHERE id_pengguna=$1',[req.user.id_pengguna]);
+    const result=await client.query(
+      'UPDATE alamat_pengguna SET label=$1,nama_penerima=$2,no_telepon=$3,alamat=$4,utama=$5 WHERE id_alamat=$6 AND id_pengguna=$7 RETURNING id_alamat,label,nama_penerima,no_telepon,alamat,utama,dibuat',
+      [label,nama,phone,address,isDefault,req.params.id,req.user.id_pengguna]
+    );
+    if(isDefault)await client.query('UPDATE pengguna SET alamat=$1,no_telepon=COALESCE($2,no_telepon) WHERE id_pengguna=$3',[address,phone,req.user.id_pengguna]);
+    await client.query('COMMIT');
+    res.json(result.rows[0]);
+  }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
+}));
+
+app.patch('/api/alamat/:id/utama', requireUser, asyncRoute(async (req, res) => {
+  await ensureFeatureSchema();
+  const client=await db.connect();
+  try{
+    await client.query('BEGIN');
+    const address=await client.query('SELECT * FROM alamat_pengguna WHERE id_alamat=$1 AND id_pengguna=$2 FOR UPDATE',[req.params.id,req.user.id_pengguna]);
+    if(!address.rows[0]){await client.query('ROLLBACK');return fail(res,404,'Alamat tidak ditemukan.');}
+    await client.query('UPDATE alamat_pengguna SET utama=FALSE WHERE id_pengguna=$1',[req.user.id_pengguna]);
+    const result=await client.query('UPDATE alamat_pengguna SET utama=TRUE WHERE id_alamat=$1 RETURNING id_alamat,label,nama_penerima,no_telepon,alamat,utama,dibuat',[req.params.id]);
+    await client.query('UPDATE pengguna SET alamat=$1,no_telepon=COALESCE($2,no_telepon) WHERE id_pengguna=$3',[address.rows[0].alamat,address.rows[0].no_telepon,req.user.id_pengguna]);
+    await client.query('COMMIT');
+    res.json(result.rows[0]);
+  }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
+}));
+
+app.delete('/api/alamat/:id', requireUser, asyncRoute(async (req, res) => {
+  await ensureFeatureSchema();
+  const client=await db.connect();
+  try{
+    await client.query('BEGIN');
+    const address=await client.query('SELECT * FROM alamat_pengguna WHERE id_alamat=$1 AND id_pengguna=$2 FOR UPDATE',[req.params.id,req.user.id_pengguna]);
+    if(!address.rows[0]){await client.query('ROLLBACK');return fail(res,404,'Alamat tidak ditemukan.');}
+    await client.query('DELETE FROM alamat_pengguna WHERE id_alamat=$1',[req.params.id]);
+    if(address.rows[0].utama){
+      const next=await client.query('SELECT * FROM alamat_pengguna WHERE id_pengguna=$1 ORDER BY dibuat DESC,id_alamat DESC LIMIT 1 FOR UPDATE',[req.user.id_pengguna]);
+      if(next.rows[0]){
+        await client.query('UPDATE alamat_pengguna SET utama=TRUE WHERE id_alamat=$1',[next.rows[0].id_alamat]);
+        await client.query('UPDATE pengguna SET alamat=$1,no_telepon=COALESCE($2,no_telepon) WHERE id_pengguna=$3',[next.rows[0].alamat,next.rows[0].no_telepon,req.user.id_pengguna]);
+      }else await client.query("UPDATE pengguna SET alamat=NULL WHERE id_pengguna=$1",[req.user.id_pengguna]);
+    }
+    await client.query('COMMIT');
+    res.status(204).end();
+  }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
+}));
+
+app.get('/api/penjual', asyncRoute(async (_req, res) => {
+  await ensureFeatureSchema();
+  const result=await db.query(
+    `SELECT s.id_penjual,s.nama_toko,s.deskripsi,s.alamat,s.foto_url,s.status,
+      (SELECT COUNT(*)::int FROM hewan h WHERE h.id_penjual=s.id_penjual AND h.status='Tersedia' AND h.stok>0) AS jumlah_hewan,
+      (SELECT ROUND(AVG(u.rating)::numeric,1) FROM ulasan u JOIN hewan h ON h.id_hewan=u.id_hewan WHERE h.id_penjual=s.id_penjual) AS rating
+     FROM penjual s WHERE s.status='Aktif' ORDER BY s.nama_toko`
+  );
+  res.json(result.rows);
+}));
+
+app.get('/api/penjual/saya', requireUser, asyncRoute(async (req, res) => {
+  await ensureFeatureSchema();
+  const result=await db.query(
+    'SELECT id_penjual,id_pengguna,nama_toko,deskripsi,no_telepon,alamat,foto_url,status,dibuat FROM penjual WHERE id_pengguna=$1',
+    [req.user.id_pengguna]
+  );
+  res.json(result.rows[0]||null);
+}));
+
+app.post('/api/penjual/saya', requireUser, asyncRoute(async (req, res) => {
+  await ensureFeatureSchema();
+  const nama=req.body?.nama_toko?.trim();
+  const description=req.body?.deskripsi?.trim()||null;
+  const phone=req.body?.no_telepon?.trim()||null;
+  const address=req.body?.alamat?.trim()||null;
+  const photo=req.body?.foto_url?.trim()||null;
+  if(!nama)return fail(res,400,'Nama usaha wajib diisi.');
+  if(photo){try{const url=new URL(photo);if(!['http:','https:'].includes(url.protocol))throw new Error();}catch{return fail(res,400,'URL foto profil tidak valid.');}}
+  const result=await db.query(
+    `INSERT INTO penjual(id_pengguna,nama_toko,deskripsi,no_telepon,alamat,foto_url,status)
+     VALUES ($1,$2,$3,$4,$5,$6,'Menunggu')
+     ON CONFLICT (id_pengguna) DO UPDATE SET nama_toko=EXCLUDED.nama_toko,deskripsi=EXCLUDED.deskripsi,
+       no_telepon=EXCLUDED.no_telepon,alamat=EXCLUDED.alamat,foto_url=EXCLUDED.foto_url,
+       status=CASE WHEN penjual.status='Aktif' THEN 'Aktif' ELSE 'Menunggu' END
+     RETURNING id_penjual,id_pengguna,nama_toko,deskripsi,no_telepon,alamat,foto_url,status,dibuat`,
+    [req.user.id_pengguna,nama,description,phone,address,photo]
+  );
+  res.status(201).json(result.rows[0]);
+}));
+
+app.get('/api/penjual/:id', asyncRoute(async (req, res) => {
+  await ensureFeatureSchema();
+  const result=await db.query(
+    `SELECT s.id_penjual,s.nama_toko,s.deskripsi,s.no_telepon,s.alamat,s.foto_url,s.dibuat,u.nama AS nama_pemilik,
+      (SELECT COUNT(*)::int FROM hewan h WHERE h.id_penjual=s.id_penjual AND h.status='Tersedia' AND h.stok>0) AS jumlah_hewan,
+      (SELECT ROUND(AVG(ul.rating)::numeric,1) FROM ulasan ul JOIN hewan h ON h.id_hewan=ul.id_hewan WHERE h.id_penjual=s.id_penjual) AS rating
+     FROM penjual s JOIN pengguna u ON u.id_pengguna=s.id_pengguna WHERE s.id_penjual=$1 AND s.status='Aktif'`,
+    [req.params.id]
+  );
+  if(!result.rows[0])return fail(res,404,'Profil penjual tidak ditemukan.');
+  const animals=await db.query(`${animalSelect} WHERE h.id_penjual=$1 AND h.stok>0 AND h.status='Tersedia' ORDER BY h.id_hewan DESC`,[req.params.id]);
+  res.json({...result.rows[0],animals:animals.rows.map(publicAnimal)});
+}));
+
+app.get('/api/hewan/:id/penjual', asyncRoute(async (req, res) => {
+  await ensureFeatureSchema();
+  const result=await db.query(
+    `SELECT s.id_penjual,s.nama_toko,s.deskripsi,s.no_telepon,s.alamat,s.foto_url,s.status,
+      (SELECT COUNT(*)::int FROM hewan h WHERE h.id_penjual=s.id_penjual AND h.status='Tersedia' AND h.stok>0) AS jumlah_hewan,
+      (SELECT ROUND(AVG(u.rating)::numeric,1) FROM ulasan u JOIN hewan h ON h.id_hewan=u.id_hewan WHERE h.id_penjual=s.id_penjual) AS rating
+     FROM hewan h JOIN penjual s ON s.id_penjual=h.id_penjual WHERE h.id_hewan=$1 AND s.status='Aktif'`,
+    [req.params.id]
+  );
+  res.json(result.rows[0]||null);
+}));
+
+app.get('/api/admin/penjual', requireUser, requireAdmin, asyncRoute(async (_req, res) => {
+  await ensureFeatureSchema();
+  const result=await db.query(
+    `SELECT s.id_penjual,s.id_pengguna,s.nama_toko,s.deskripsi,s.no_telepon,s.alamat,s.foto_url,s.status,s.dibuat,u.nama,u.email,
+      (SELECT COUNT(*)::int FROM hewan h WHERE h.id_penjual=s.id_penjual) AS jumlah_hewan
+     FROM penjual s JOIN pengguna u ON u.id_pengguna=s.id_pengguna ORDER BY CASE s.status WHEN 'Menunggu' THEN 0 ELSE 1 END,s.dibuat DESC`
+  );
+  res.json(result.rows);
+}));
+
+app.patch('/api/admin/penjual/:id', requireUser, requireAdmin, asyncRoute(async (req, res) => {
+  await ensureFeatureSchema();
+  const status=req.body?.status;
+  if(!['Aktif','Ditolak','Nonaktif'].includes(status))return fail(res,400,'Status penjual tidak valid.');
+  const result=await db.query(
+    'UPDATE penjual SET status=$1 WHERE id_penjual=$2 RETURNING id_penjual,id_pengguna,nama_toko,status',
+    [status,req.params.id]
+  );
+  if(!result.rows[0])return fail(res,404,'Pengajuan penjual tidak ditemukan.');
+  try{
+    await createNotification(db,result.rows[0].id_pengguna,
+      status==='Aktif'?'Profil penjual disetujui':'Status pengajuan penjual diperbarui',
+      status==='Aktif'?'Profil tokomu sudah aktif dan dapat dilihat pelanggan.':`Status profil tokomu: ${status}.`,
+      'seller',{id_penjual:result.rows[0].id_penjual});
+  }catch(error){console.error('Notifikasi status penjual gagal disimpan:',error.message);}
+  res.json(result.rows[0]);
+}));
+
+app.get('/api/notifikasi', requireUser, asyncRoute(async (req, res) => {
+  await ensureFeatureSchema();
+  const result=await db.query(
+    'SELECT id_notifikasi,judul,pesan,jenis,data,dibaca,dibuat FROM notifikasi WHERE id_pengguna=$1 ORDER BY dibuat DESC,id_notifikasi DESC LIMIT 100',
+    [req.user.id_pengguna]
+  );
+  res.json({items:result.rows,unread:result.rows.filter(item=>!item.dibaca).length});
+}));
+
+app.patch('/api/notifikasi/semua/dibaca', requireUser, asyncRoute(async (req, res) => {
+  await ensureFeatureSchema();
+  await db.query('UPDATE notifikasi SET dibaca=TRUE WHERE id_pengguna=$1 AND dibaca=FALSE',[req.user.id_pengguna]);
+  res.json({dibaca:true});
+}));
+
+app.patch('/api/notifikasi/:id', requireUser, asyncRoute(async (req, res) => {
+  await ensureFeatureSchema();
+  const result=await db.query(
+    'UPDATE notifikasi SET dibaca=TRUE WHERE id_notifikasi=$1 AND id_pengguna=$2 RETURNING id_notifikasi,dibaca',
+    [req.params.id,req.user.id_pengguna]
+  );
+  if(!result.rows[0])return fail(res,404,'Notifikasi tidak ditemukan.');
+  res.json(result.rows[0]);
+}));
+
 app.get('/api/admin/ringkasan', requireUser, requireAdmin, asyncRoute(async (_req, res) => {
   const result = await db.query(
     `SELECT
@@ -298,6 +566,8 @@ app.get('/api/admin/pesanan', requireUser, requireAdmin, asyncRoute(async (_req,
 
 app.post('/api/admin/hewan', requireUser, requireAdmin, asyncRoute(async (req, res) => {
   const data = req.body || {};
+  const hasSellerField=Object.prototype.hasOwnProperty.call(data,'id_penjual');
+  if(hasSellerField)await ensureFeatureSchema();
   const idKategori = parseNumber(data.id_kategori,'Kategori',{min:1,integer:true});
   const nama = data.nama?.trim();
   const harga = parseNumber(data.harga,'Harga');
@@ -306,13 +576,23 @@ app.post('/api/admin/hewan', requireUser, requireAdmin, asyncRoute(async (req, r
   const client = await db.connect();
   try {
     await client.query('BEGIN');
-    const result = await client.query(
-      `INSERT INTO hewan (id_kategori,nama,jenis,ras,jenis_kelamin,berat,umur,kondisi_kesehatan,harga,stok,deskripsi,status)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id_hewan`,
-      [idKategori,nama,data.jenis||null,data.ras||null,data.jenis_kelamin||null,
-        parseNumber(data.berat,'Berat',{min:0,optional:true}),parseNumber(data.umur,'Umur',{min:0,integer:true,optional:true}),
-        data.kondisi_kesehatan||null,harga,stok,data.deskripsi||null,stok===0?(data.status==='Terjual'?'Terjual':'Habis'):(data.status||'Tersedia')]
-    );
+    let result;
+    const values=[idKategori,nama,data.jenis||null,data.ras||null,data.jenis_kelamin||null,
+      parseNumber(data.berat,'Berat',{min:0,optional:true}),parseNumber(data.umur,'Umur',{min:0,integer:true,optional:true}),
+      data.kondisi_kesehatan||null,harga,stok,data.deskripsi||null,stok===0?(data.status==='Terjual'?'Terjual':'Habis'):(data.status||'Tersedia')];
+    if(hasSellerField){
+      const sellerId=data.id_penjual?parseNumber(data.id_penjual,'Penjual',{min:1,integer:true}):null;
+      if(sellerId){const seller=await client.query("SELECT id_penjual FROM penjual WHERE id_penjual=$1 AND status='Aktif'",[sellerId]);if(!seller.rows[0]){await client.query('ROLLBACK');return fail(res,400,'Pilih profil penjual yang sudah aktif.');}}
+      result=await client.query(
+        `INSERT INTO hewan (id_kategori,nama,jenis,ras,jenis_kelamin,berat,umur,kondisi_kesehatan,harga,stok,deskripsi,status,id_penjual)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id_hewan`,[...values,sellerId]
+      );
+    }else{
+      result=await client.query(
+        `INSERT INTO hewan (id_kategori,nama,jenis,ras,jenis_kelamin,berat,umur,kondisi_kesehatan,harga,stok,deskripsi,status)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id_hewan`,values
+      );
+    }
     if (data.gambar_url?.trim()) await client.query('INSERT INTO gambar_hewan (id_hewan,url,gambar_utama) VALUES ($1,$2,TRUE)',[result.rows[0].id_hewan,data.gambar_url.trim()]);
     await client.query('COMMIT');
     res.status(201).json({ id_hewan:result.rows[0].id_hewan });
@@ -322,6 +602,8 @@ app.post('/api/admin/hewan', requireUser, requireAdmin, asyncRoute(async (req, r
 
 app.patch('/api/admin/hewan/:id', requireUser, requireAdmin, asyncRoute(async (req, res) => {
   const data = req.body || {};
+  const hasSellerField=Object.prototype.hasOwnProperty.call(data,'id_penjual');
+  if(hasSellerField)await ensureFeatureSchema();
   const idKategori = parseNumber(data.id_kategori,'Kategori',{min:1,integer:true});
   const nama = data.nama?.trim();
   const harga = parseNumber(data.harga,'Harga');
@@ -330,13 +612,25 @@ app.patch('/api/admin/hewan/:id', requireUser, requireAdmin, asyncRoute(async (r
   const client = await db.connect();
   try {
     await client.query('BEGIN');
-    const result = await client.query(
-      `UPDATE hewan SET id_kategori=$1,nama=$2,jenis=$3,ras=$4,jenis_kelamin=$5,berat=$6,umur=$7,
-       kondisi_kesehatan=$8,harga=$9,stok=$10,deskripsi=$11,status=$12 WHERE id_hewan=$13 RETURNING id_hewan`,
-      [idKategori,nama,data.jenis||null,data.ras||null,data.jenis_kelamin||null,
-        parseNumber(data.berat,'Berat',{min:0,optional:true}),parseNumber(data.umur,'Umur',{min:0,integer:true,optional:true}),
-        data.kondisi_kesehatan||null,harga,stok,data.deskripsi||null,stok===0?(data.status==='Terjual'?'Terjual':'Habis'):(data.status||'Tersedia'),req.params.id]
-    );
+    let result;
+    const values=[idKategori,nama,data.jenis||null,data.ras||null,data.jenis_kelamin||null,
+      parseNumber(data.berat,'Berat',{min:0,optional:true}),parseNumber(data.umur,'Umur',{min:0,integer:true,optional:true}),
+      data.kondisi_kesehatan||null,harga,stok,data.deskripsi||null,stok===0?(data.status==='Terjual'?'Terjual':'Habis'):(data.status||'Tersedia')];
+    if(hasSellerField){
+      const sellerId=data.id_penjual?parseNumber(data.id_penjual,'Penjual',{min:1,integer:true}):null;
+      if(sellerId){const seller=await client.query("SELECT id_penjual FROM penjual WHERE id_penjual=$1 AND status='Aktif'",[sellerId]);if(!seller.rows[0]){await client.query('ROLLBACK');return fail(res,400,'Pilih profil penjual yang sudah aktif.');}}
+      result=await client.query(
+        `UPDATE hewan SET id_kategori=$1,nama=$2,jenis=$3,ras=$4,jenis_kelamin=$5,berat=$6,umur=$7,
+         kondisi_kesehatan=$8,harga=$9,stok=$10,deskripsi=$11,status=$12,id_penjual=$13 WHERE id_hewan=$14 RETURNING id_hewan`,
+        [...values,sellerId,req.params.id]
+      );
+    }else{
+      result=await client.query(
+        `UPDATE hewan SET id_kategori=$1,nama=$2,jenis=$3,ras=$4,jenis_kelamin=$5,berat=$6,umur=$7,
+         kondisi_kesehatan=$8,harga=$9,stok=$10,deskripsi=$11,status=$12 WHERE id_hewan=$13 RETURNING id_hewan`,
+        [...values,req.params.id]
+      );
+    }
     if (!result.rows[0]) { await client.query('ROLLBACK'); return fail(res,404,'Hewan tidak ditemukan.'); }
     if (data.gambar_url?.trim()) {
       await client.query('DELETE FROM gambar_hewan WHERE id_hewan=$1 AND gambar_utama=TRUE',[req.params.id]);
@@ -375,13 +669,15 @@ app.delete('/api/admin/hewan/:id', requireUser, requireAdmin, asyncRoute(async (
 
 app.patch('/api/admin/pesanan/:id', requireUser, requireAdmin, asyncRoute(async (req, res) => {
   const { status_pesanan, status_pembayaran } = req.body || {};
+  let featureSchemaReady=false;
+  try{await ensureFeatureSchema();featureSchemaReady=true;}catch(error){console.error('Notifikasi belum tersedia:',error.message);}
   const validOrderStates = ['Pending','Diproses','Selesai','Dibatalkan'];
   const validPaymentStates = ['Belum Dibayar','Berhasil'];
   if (!validOrderStates.includes(status_pesanan) || !validPaymentStates.includes(status_pembayaran)) return fail(res,400,'Status pesanan atau pembayaran tidak valid.');
   const client = await db.connect();
   try {
     await client.query('BEGIN');
-    const order = await client.query('SELECT p.id_pesanan,p.status_pesanan,pb.status AS status_pembayaran FROM pesanan p LEFT JOIN pembayaran pb ON pb.id_pesanan=p.id_pesanan WHERE p.id_pesanan=$1 FOR UPDATE OF p',[req.params.id]);
+    const order = await client.query('SELECT p.id_pesanan,p.id_pengguna,p.status_pesanan,pb.status AS status_pembayaran FROM pesanan p LEFT JOIN pembayaran pb ON pb.id_pesanan=p.id_pesanan WHERE p.id_pesanan=$1 FOR UPDATE OF p',[req.params.id]);
     if (!order.rows[0]) { await client.query('ROLLBACK'); return fail(res,404,'Pesanan tidak ditemukan.'); }
     if (order.rows[0].status_pesanan==='Dibatalkan' && status_pesanan!=='Dibatalkan') { await client.query('ROLLBACK'); return fail(res,409,'Pesanan yang sudah dibatalkan tidak dapat dibuka kembali.'); }
     if (order.rows[0].status_pesanan==='Selesai' && status_pesanan!=='Selesai') { await client.query('ROLLBACK'); return fail(res,409,'Pesanan selesai tidak dapat diubah kembali.'); }
@@ -393,6 +689,13 @@ app.patch('/api/admin/pesanan/:id', requireUser, requireAdmin, asyncRoute(async 
     }
     await client.query('UPDATE pesanan SET status_pesanan=$1 WHERE id_pesanan=$2',[status_pesanan,req.params.id]);
     await client.query("UPDATE pembayaran SET status=$1,tanggal_bayar=CASE WHEN $1='Berhasil' THEN COALESCE(tanggal_bayar,CURRENT_TIMESTAMP) ELSE NULL END WHERE id_pesanan=$2",[status_pembayaran,req.params.id]);
+    if(featureSchemaReady&&(status_pesanan!==order.rows[0].status_pesanan||status_pembayaran!==order.rows[0].status_pembayaran)){
+      try{
+        const title=status_pembayaran!==order.rows[0].status_pembayaran?'Status pembayaran diperbarui':'Status pesanan diperbarui';
+        const message=status_pembayaran!==order.rows[0].status_pembayaran?`Pembayaran pesanan #${order.rows[0].id_pesanan}: ${status_pembayaran}.`:`Pesanan #${order.rows[0].id_pesanan}: ${status_pesanan}.`;
+        await createOptionalNotification(client,order.rows[0].id_pengguna,title,message,'order',{id_pesanan:order.rows[0].id_pesanan});
+      }catch(error){console.error('Notifikasi status pesanan gagal:',error.message);}
+    }
     await client.query('COMMIT');
     res.json({ status_pesanan,status_pembayaran });
   } catch (error) { await client.query('ROLLBACK'); throw error; }
@@ -499,14 +802,29 @@ app.delete('/api/keranjang/:id', requireUser, asyncRoute(async (req, res) => {
 
 app.post('/api/pesanan', requireUser, asyncRoute(async (req, res) => {
   const method = req.body?.metode_serah_terima;
-  const address = req.body?.alamat_pengiriman || null;
+  let address = req.body?.alamat_pengiriman || null;
+  let addressId=req.body?.id_alamat?parseNumber(req.body.id_alamat,'Alamat',{min:1,integer:true}):null;
+  const wantsFeatureFields=Boolean(addressId||req.body?.jadwal_serah_terima);
+  let featureSchemaReady=false;
+  if(wantsFeatureFields){
+    try{await ensureFeatureSchema();featureSchemaReady=true;}
+    catch(error){console.error('Fitur alamat/jadwal belum tersedia; pesanan tetap memakai alur lama:',error.message);addressId=null;}
+  }
+  const featureFields=wantsFeatureFields&&featureSchemaReady;
+  const handoffSchedule=parseHandoffSchedule(req.body?.jadwal_serah_terima);
   const items = Array.isArray(req.body?.items) ? req.body.items : [];
   if (!['Kirim Kurir','Ambil di Kandang'].includes(method)) return fail(res, 400, 'Metode serah terima tidak valid.');
-  if (method === 'Kirim Kurir' && !address) return fail(res, 400, 'Alamat pengiriman wajib diisi.');
+  if (method === 'Kirim Kurir' && !address && !addressId) return fail(res, 400, 'Alamat pengiriman wajib diisi.');
+  if (address && address.length>255) return fail(res,400,'Alamat pengiriman maksimal 255 karakter.');
   if (!items.length) return fail(res, 400, 'Keranjang pesanan kosong.');
   const client = await db.connect();
   try {
     await client.query('BEGIN');
+    if(addressId){
+      const selected=await client.query('SELECT alamat FROM alamat_pengguna WHERE id_alamat=$1 AND id_pengguna=$2',[addressId,req.user.id_pengguna]);
+      if(!selected.rows[0]){await client.query('ROLLBACK');return fail(res,404,'Alamat pengiriman tidak ditemukan.');}
+      address=selected.rows[0].alamat;
+    }
     const animalIds = items.map(item => item.id_hewan);
     const locked = await client.query('SELECT id_hewan,harga,stok,status FROM hewan WHERE id_hewan=ANY($1::int[]) FOR UPDATE', [animalIds]);
     const byId = new Map(locked.rows.map(row => [String(row.id_hewan), row]));
@@ -521,10 +839,14 @@ app.post('/api/pesanan', requireUser, asyncRoute(async (req, res) => {
       total += price * quantity;
       return { id: animal.id_hewan, price, quantity, stock: animal.stok };
     });
-    const order = await client.query(
+    const order = featureFields ? await client.query(
+      `INSERT INTO pesanan (id_pengguna,total_harga,metode_serah_terima,alamat_pengiriman,jadwal_serah_terima,status_pesanan)
+       VALUES ($1,$2,$3,$4,$5,'Pending') RETURNING *`,
+      [req.user.id_pengguna,total,method,address,handoffSchedule]
+    ) : await client.query(
       `INSERT INTO pesanan (id_pengguna,total_harga,metode_serah_terima,alamat_pengiriman,status_pesanan)
        VALUES ($1,$2,$3,$4,'Pending') RETURNING *`,
-      [req.user.id_pengguna, total, method, address]
+      [req.user.id_pengguna,total,method,address]
     );
     for (const item of normalized) {
       await client.query('INSERT INTO detail_pesanan (id_pesanan,id_hewan,harga_satuan,kuantitas) VALUES ($1,$2,$3,$4)', [order.rows[0].id_pesanan,item.id,item.price,item.quantity]);
@@ -536,6 +858,12 @@ app.post('/api/pesanan', requireUser, asyncRoute(async (req, res) => {
     }
     await client.query("UPDATE keranjang SET status='Checkout' WHERE id_pengguna=$1 AND COALESCE(status,'Aktif')='Aktif'", [req.user.id_pengguna]);
     await client.query('COMMIT');
+    try{
+      await ensureFeatureSchema();
+      await createNotification(db,req.user.id_pengguna,'Pesanan berhasil dibuat',`Pesanan MK-${String(order.rows[0].id_pesanan).padStart(6,'0')} sedang menunggu konfirmasi.`,'order',{id_pesanan:order.rows[0].id_pesanan});
+      const sellers=await db.query('SELECT DISTINCT s.id_pengguna,s.nama_toko FROM detail_pesanan d JOIN hewan h ON h.id_hewan=d.id_hewan JOIN penjual s ON s.id_penjual=h.id_penjual WHERE d.id_pesanan=$1 AND s.status=\'Aktif\'',[order.rows[0].id_pesanan]);
+      for(const seller of sellers.rows)await createNotification(db,seller.id_pengguna,'Pesanan baru',`Ada pesanan baru untuk produk dari ${seller.nama_toko}.`,'order',{id_pesanan:order.rows[0].id_pesanan});
+    }catch(error){console.error('Notifikasi pesanan gagal disimpan:',error.message);}
     res.status(201).json({ ...order.rows[0], details: normalized, pembayaran: { status: 'Belum Dibayar', jumlah: total } });
   } catch (error) { await client.query('ROLLBACK'); throw error; }
   finally { client.release(); }
@@ -620,16 +948,112 @@ app.post('/api/ulasan', requireUser, asyncRoute(async (req, res) => {
 }));
 
 app.get('/api/chat', requireUser, asyncRoute(async (req, res) => {
+  await ensureFeatureSchema();
   await db.query(
-    `UPDATE pesan_chat SET status_baca='Sudah Dibaca' WHERE id_chat IN (SELECT id_chat FROM chat WHERE id_pengguna=$1)
+    `UPDATE pesan_chat SET status_baca='Sudah Dibaca' WHERE id_chat IN (SELECT id_chat FROM chat WHERE id_pengguna=$1 AND id_penjual IS NULL)
      AND id_pengirim<>$1 AND status_baca='Belum Dibaca'`, [req.user.id_pengguna]
   );
   const result = await db.query(
     `SELECT c.id_chat,c.status,COALESCE(json_agg(json_build_object('id_pesan',m.id_pesan,'id_pengirim',m.id_pengirim,'isi_pesan',m.isi_pesan,'waktu_kirim',m.waktu_kirim,'status_baca',m.status_baca) ORDER BY m.waktu_kirim) FILTER (WHERE m.id_pesan IS NOT NULL),'[]') AS messages
-     FROM chat c LEFT JOIN pesan_chat m ON m.id_chat=c.id_chat WHERE c.id_pengguna=$1 GROUP BY c.id_chat ORDER BY c.id_chat DESC LIMIT 1`,
+     FROM chat c LEFT JOIN pesan_chat m ON m.id_chat=c.id_chat WHERE c.id_pengguna=$1 AND c.id_penjual IS NULL GROUP BY c.id_chat ORDER BY c.id_chat DESC LIMIT 1`,
     [req.user.id_pengguna]
   );
   res.json(result.rows[0] || null);
+}));
+
+app.get('/api/chat/penjual', requireUser, asyncRoute(async (req, res) => {
+  await ensureFeatureSchema();
+  const result=await db.query(
+    `SELECT c.id_chat,c.id_penjual,c.status,s.nama_toko,s.foto_url,
+      COALESCE(json_agg(json_build_object('id_pesan',m.id_pesan,'id_pengirim',m.id_pengirim,'isi_pesan',m.isi_pesan,'waktu_kirim',m.waktu_kirim,'status_baca',m.status_baca) ORDER BY m.waktu_kirim) FILTER (WHERE m.id_pesan IS NOT NULL),'[]') AS messages
+     FROM chat c JOIN penjual s ON s.id_penjual=c.id_penjual LEFT JOIN pesan_chat m ON m.id_chat=c.id_chat
+     WHERE c.id_pengguna=$1 AND c.id_penjual IS NOT NULL GROUP BY c.id_chat,s.id_penjual ORDER BY MAX(m.waktu_kirim) DESC NULLS LAST,c.id_chat DESC`,
+    [req.user.id_pengguna]
+  );
+  res.json(result.rows);
+}));
+
+app.get('/api/chat/penjual/:sellerId', requireUser, asyncRoute(async (req, res) => {
+  await ensureFeatureSchema();
+  const result=await db.query(
+    `SELECT c.id_chat,c.id_pengguna,c.id_penjual,c.status,s.nama_toko,s.foto_url,
+      COALESCE(json_agg(json_build_object('id_pesan',m.id_pesan,'id_pengirim',m.id_pengirim,'isi_pesan',m.isi_pesan,'waktu_kirim',m.waktu_kirim,'status_baca',m.status_baca) ORDER BY m.waktu_kirim) FILTER (WHERE m.id_pesan IS NOT NULL),'[]') AS messages
+     FROM penjual s LEFT JOIN chat c ON c.id_penjual=s.id_penjual AND c.id_pengguna=$1 LEFT JOIN pesan_chat m ON m.id_chat=c.id_chat
+     WHERE s.id_penjual=$2 AND s.status='Aktif' GROUP BY c.id_chat,c.id_pengguna,c.id_penjual,c.status,s.id_penjual`,
+    [req.user.id_pengguna,req.params.sellerId]
+  );
+  if(!result.rows[0])return fail(res,404,'Profil penjual tidak tersedia.');
+  if(result.rows[0].id_chat)await db.query("UPDATE pesan_chat SET status_baca='Sudah Dibaca' WHERE id_chat=$1 AND id_pengirim<>$2 AND status_baca='Belum Dibaca'",[result.rows[0].id_chat,req.user.id_pengguna]);
+  res.json(result.rows[0]);
+}));
+
+app.post('/api/chat/penjual/:sellerId/pesan', requireUser, asyncRoute(async (req, res) => {
+  await ensureFeatureSchema();
+  const text=req.body?.isi_pesan?.trim();
+  if(!text)return fail(res,400,'Pesan tidak boleh kosong.');
+  const client=await db.connect();
+  try{
+    await client.query('BEGIN');
+    const seller=await client.query("SELECT id_penjual,id_pengguna,nama_toko FROM penjual WHERE id_penjual=$1 AND status='Aktif'",[req.params.sellerId]);
+    if(!seller.rows[0]){await client.query('ROLLBACK');return fail(res,404,'Profil penjual tidak tersedia.');}
+    if(Number(seller.rows[0].id_pengguna)===Number(req.user.id_pengguna)){await client.query('ROLLBACK');return fail(res,409,'Kamu tidak dapat mengirim pesan ke tokomu sendiri.');}
+    const chat=await client.query(
+      `INSERT INTO chat(id_pengguna,id_penjual,status) VALUES ($1,$2,'Aktif')
+       ON CONFLICT (id_pengguna,id_penjual) WHERE id_penjual IS NOT NULL DO UPDATE SET status='Aktif' RETURNING id_chat`,
+      [req.user.id_pengguna,seller.rows[0].id_penjual]
+    );
+    const message=await client.query('INSERT INTO pesan_chat(id_chat,id_pengirim,isi_pesan) VALUES ($1,$2,$3) RETURNING *',[chat.rows[0].id_chat,req.user.id_pengguna,text]);
+    await createOptionalNotification(client,seller.rows[0].id_pengguna,'Pesan baru',`Pesan baru tentang ${seller.rows[0].nama_toko}.`,'chat',{id_chat:chat.rows[0].id_chat});
+    await client.query('COMMIT');
+    res.status(201).json(message.rows[0]);
+  }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
+}));
+
+app.get('/api/penjual/saya/chat', requireUser, asyncRoute(async (req, res) => {
+  await ensureFeatureSchema();
+  const seller=await db.query("SELECT id_penjual FROM penjual WHERE id_pengguna=$1 AND status='Aktif'",[req.user.id_pengguna]);
+  if(!seller.rows[0])return fail(res,403,'Profil penjual aktif diperlukan untuk membuka kotak masuk.');
+  const result=await db.query(
+    `SELECT c.id_chat,c.id_pengguna,u.nama,u.email,c.status,
+      COALESCE(json_agg(json_build_object('id_pesan',m.id_pesan,'id_pengirim',m.id_pengirim,'isi_pesan',m.isi_pesan,'waktu_kirim',m.waktu_kirim,'status_baca',m.status_baca) ORDER BY m.waktu_kirim) FILTER (WHERE m.id_pesan IS NOT NULL),'[]') AS messages
+     FROM chat c JOIN pengguna u ON u.id_pengguna=c.id_pengguna LEFT JOIN pesan_chat m ON m.id_chat=c.id_chat
+     WHERE c.id_penjual=$1 GROUP BY c.id_chat,u.id_pengguna ORDER BY MAX(m.waktu_kirim) DESC NULLS LAST,c.id_chat DESC`,
+    [seller.rows[0].id_penjual]
+  );
+  res.json(result.rows);
+}));
+
+app.get('/api/penjual/saya/chat/:chatId', requireUser, asyncRoute(async (req, res) => {
+  await ensureFeatureSchema();
+  const result=await db.query(
+    `SELECT c.id_chat,c.id_pengguna,c.id_penjual,c.status,u.nama,u.email,
+      COALESCE(json_agg(json_build_object('id_pesan',m.id_pesan,'id_pengirim',m.id_pengirim,'isi_pesan',m.isi_pesan,'waktu_kirim',m.waktu_kirim,'status_baca',m.status_baca) ORDER BY m.waktu_kirim) FILTER (WHERE m.id_pesan IS NOT NULL),'[]') AS messages
+     FROM chat c JOIN penjual s ON s.id_penjual=c.id_penjual JOIN pengguna u ON u.id_pengguna=c.id_pengguna LEFT JOIN pesan_chat m ON m.id_chat=c.id_chat
+     WHERE c.id_chat=$1 AND s.id_pengguna=$2 GROUP BY c.id_chat,u.id_pengguna`,
+    [req.params.chatId,req.user.id_pengguna]
+  );
+  if(!result.rows[0])return fail(res,404,'Percakapan tidak ditemukan.');
+  await db.query("UPDATE pesan_chat SET status_baca='Sudah Dibaca' WHERE id_chat=$1 AND id_pengirim<>$2 AND status_baca='Belum Dibaca'",[req.params.chatId,req.user.id_pengguna]);
+  res.json(result.rows[0]);
+}));
+
+app.post('/api/penjual/saya/chat/:chatId/pesan', requireUser, asyncRoute(async (req, res) => {
+  await ensureFeatureSchema();
+  const text=req.body?.isi_pesan?.trim();
+  if(!text)return fail(res,400,'Pesan tidak boleh kosong.');
+  const result=await db.query(
+    `INSERT INTO pesan_chat(id_chat,id_pengirim,isi_pesan)
+     SELECT c.id_chat,$1,$3 FROM chat c JOIN penjual s ON s.id_penjual=c.id_penjual
+     WHERE c.id_chat=$2 AND s.id_pengguna=$1 RETURNING *`,
+    [req.user.id_pengguna,req.params.chatId,text]
+  );
+  if(!result.rows[0])return fail(res,404,'Percakapan tidak ditemukan.');
+  const owner=await db.query('SELECT id_pengguna FROM chat WHERE id_chat=$1',[req.params.chatId]);
+  if(owner.rows[0]){
+    try{await createNotification(db,owner.rows[0].id_pengguna,'Balasan dari penjual','Penjual membalas pesanmu.','chat',{id_chat:req.params.chatId});}
+    catch(error){console.error('Notifikasi balasan penjual gagal disimpan:',error.message);}
+  }
+  res.status(201).json(result.rows[0]);
 }));
 
 app.get('/api/admin/chat', requireUser, requireAdmin, asyncRoute(async (_req, res) => {
@@ -673,6 +1097,7 @@ app.get('/api/admin/chat/:id', requireUser, requireAdmin, asyncRoute(async (req,
 }));
 
 app.post('/api/admin/chat/:id/pesan', requireUser, requireAdmin, asyncRoute(async (req, res) => {
+  await ensureFeatureSchema();
   const text = req.body?.isi_pesan?.trim();
   if (!text) return fail(res,400,'Pesan tidak boleh kosong.');
   const result = await db.query(
@@ -681,18 +1106,29 @@ app.post('/api/admin/chat/:id/pesan', requireUser, requireAdmin, asyncRoute(asyn
     [req.user.id_pengguna,req.params.id,text]
   );
   if (!result.rows[0]) return fail(res,404,'Percakapan tidak ditemukan.');
+  const owner=await db.query('SELECT id_pengguna FROM chat WHERE id_chat=$1',[req.params.id]);
+  if(owner.rows[0]){
+    try{await createNotification(db,owner.rows[0].id_pengguna,'Balasan dari MyKandang','Tim MyKandang membalas pesanmu.','chat',{id_chat:req.params.id});}
+    catch(error){console.error('Notifikasi chat gagal disimpan:',error.message);}
+  }
   res.status(201).json(result.rows[0]);
 }));
 
 app.post('/api/chat/pesan', requireUser, asyncRoute(async (req, res) => {
+  await ensureFeatureSchema();
   const text = req.body?.isi_pesan?.trim();
   if (!text) return fail(res,400,'Pesan tidak boleh kosong.');
   const client = await db.connect();
   try {
     await client.query('BEGIN');
-    const existing = await client.query('SELECT id_chat FROM chat WHERE id_pengguna=$1 ORDER BY id_chat DESC LIMIT 1 FOR UPDATE', [req.user.id_pengguna]);
-    const chatId = existing.rows[0]?.id_chat ?? (await client.query("INSERT INTO chat (id_pengguna,status) VALUES ($1,'Aktif') RETURNING id_chat", [req.user.id_pengguna])).rows[0].id_chat;
+    const existing = await client.query('SELECT id_chat FROM chat WHERE id_pengguna=$1 AND id_penjual IS NULL ORDER BY id_chat DESC LIMIT 1 FOR UPDATE', [req.user.id_pengguna]);
+    const chatId = existing.rows[0]?.id_chat ?? (await client.query("INSERT INTO chat (id_pengguna,id_penjual,status) VALUES ($1,NULL,'Aktif') RETURNING id_chat", [req.user.id_pengguna])).rows[0].id_chat;
     const result = await client.query('INSERT INTO pesan_chat (id_chat,id_pengirim,isi_pesan) VALUES ($1,$2,$3) RETURNING *', [chatId,req.user.id_pengguna,text]);
+    const admins=await client.query("SELECT id_pengguna FROM pengguna WHERE role='staff_admin'");
+    for(const admin of admins.rows){
+      try{await createOptionalNotification(client,admin.id_pengguna,'Pesan pelanggan baru',`Ada pesan baru dari ${req.user.nama}.`,'chat',{id_chat:chatId});}
+      catch(error){console.error('Notifikasi chat admin gagal disimpan:',error.message);}
+    }
     await client.query('COMMIT');
     res.status(201).json(result.rows[0]);
   } catch (error) { await client.query('ROLLBACK'); throw error; }

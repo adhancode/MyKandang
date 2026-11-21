@@ -3,6 +3,8 @@ const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const { Transform } = require('stream');
+const { pipeline } = require('stream/promises');
 const { promisify } = require('util');
 const db = require('./db');
 
@@ -598,6 +600,46 @@ app.get('/api/admin/pesanan', requireUser, requireAdmin, asyncRoute(async (_req,
   res.json(result.rows);
 }));
 
+app.post('/api/admin/hewan/foto', requireUser, requireAdmin, asyncRoute(async (req, res) => {
+    const mimeType = String(req.headers['x-image-type'] || '').toLowerCase();
+    const formats = {
+      'image/jpeg': { extension: 'jpg', valid: buffer => buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff },
+      'image/png': { extension: 'png', valid: buffer => buffer.length >= 8 && buffer.subarray(0, 8).toString('hex') === '89504e470d0a1a0a' },
+      'image/webp': { extension: 'webp', valid: buffer => buffer.length >= 12 && buffer.toString('ascii', 0, 4) === 'RIFF' && buffer.toString('ascii', 8, 12) === 'WEBP' },
+    };
+    const format = formats[mimeType];
+    if (!format) return fail(res, 415, 'Format foto harus JPG, PNG, atau WebP.');
+
+    const uploadDir = path.join(publicDir, 'assets', 'hewan', 'uploads');
+    await fs.promises.mkdir(uploadDir, { recursive: true });
+    const fileName = `${crypto.randomBytes(16).toString('hex')}.${format.extension}`;
+    const filePath = path.join(uploadDir, fileName);
+    let prefix = Buffer.alloc(0);
+    let byteCount = 0;
+    const inspectPrefix = new Transform({
+      transform(chunk, _encoding, callback) {
+        byteCount += chunk.length;
+        if (prefix.length < 12) prefix = Buffer.concat([prefix, chunk.subarray(0, 12 - prefix.length)]);
+        callback(null, chunk);
+      },
+    });
+    try {
+      await pipeline(req, inspectPrefix, fs.createWriteStream(filePath, { flags: 'wx' }));
+      if (byteCount === 0) {
+        await fs.promises.unlink(filePath).catch(() => {});
+        return fail(res, 400, 'Pilih foto hewan terlebih dahulu.');
+      }
+      if (!format.valid(prefix)) {
+        await fs.promises.unlink(filePath).catch(() => {});
+        return fail(res, 415, 'Isi file tidak sesuai dengan format foto yang dipilih.');
+      }
+    } catch (error) {
+      await fs.promises.unlink(filePath).catch(() => {});
+      throw error;
+    }
+    res.status(201).json({ url: `/assets/hewan/uploads/${fileName}` });
+  }));
+
 app.post('/api/admin/hewan', requireUser, requireAdmin, asyncRoute(async (req, res) => {
   const data = req.body || {};
   const hasSellerField=Object.prototype.hasOwnProperty.call(data,'id_penjual');
@@ -1023,18 +1065,47 @@ app.post('/api/ulasan', requireUser, asyncRoute(async (req, res) => {
   res.status(201).json(result.rows[0]);
 }));
 
+async function loadSupportChat(userId, chatId=null) {
+  const result=await db.query(
+    `SELECT c.id_chat,c.status,
+      CASE WHEN h.id_hewan IS NULL THEN NULL ELSE json_build_object(
+        'id_hewan',h.id_hewan,'nama',h.nama,'deskripsi',h.deskripsi,'harga',h.harga,
+        'foto_url',(SELECT g.url FROM gambar_hewan g WHERE g.id_hewan=h.id_hewan ORDER BY g.gambar_utama DESC,g.id_gambar LIMIT 1)
+      ) END AS hewan,
+      COALESCE(json_agg(json_build_object('id_pesan',m.id_pesan,'id_pengirim',m.id_pengirim,'isi_pesan',m.isi_pesan,'waktu_kirim',m.waktu_kirim,'status_baca',m.status_baca) ORDER BY m.waktu_kirim) FILTER (WHERE m.id_pesan IS NOT NULL),'[]') AS messages
+     FROM chat c LEFT JOIN hewan h ON h.id_hewan=c.id_hewan LEFT JOIN pesan_chat m ON m.id_chat=c.id_chat
+     WHERE c.id_pengguna=$1 AND c.id_penjual IS NULL
+       AND (($2::int IS NOT NULL AND c.id_chat=$2) OR ($2::int IS NULL AND c.id_hewan IS NULL))
+     GROUP BY c.id_chat,h.id_hewan ORDER BY c.id_chat DESC LIMIT 1`,
+    [userId,chatId]
+  );
+  return result.rows[0]||null;
+}
+
+app.post('/api/chat/context', requireUser, asyncRoute(async (req, res) => {
+  await ensureFeatureSchema();
+  const animalId=parseNumber(req.body?.id_hewan,'Hewan',{min:1,integer:true});
+  const animal=await db.query('SELECT id_hewan FROM hewan WHERE id_hewan=$1',[animalId]);
+  if(!animal.rows[0])return fail(res,404,'Hewan tidak ditemukan.');
+  await db.query(
+    `INSERT INTO chat(id_pengguna,id_penjual,id_hewan,status) VALUES ($1,NULL,$2,'Aktif')
+     ON CONFLICT (id_pengguna,id_hewan) WHERE id_penjual IS NULL AND id_hewan IS NOT NULL DO NOTHING`,
+    [req.user.id_pengguna,animalId]
+  );
+  const result=await db.query('SELECT id_chat FROM chat WHERE id_pengguna=$1 AND id_penjual IS NULL AND id_hewan=$2',[req.user.id_pengguna,animalId]);
+  res.json(await loadSupportChat(req.user.id_pengguna,Number(result.rows[0].id_chat)));
+}));
+
 app.get('/api/chat', requireUser, asyncRoute(async (req, res) => {
   await ensureFeatureSchema();
+  const chatId=req.query.id_chat?parseNumber(req.query.id_chat,'Percakapan',{min:1,integer:true}):null;
   await db.query(
-    `UPDATE pesan_chat SET status_baca='Sudah Dibaca' WHERE id_chat IN (SELECT id_chat FROM chat WHERE id_pengguna=$1 AND id_penjual IS NULL)
-     AND id_pengirim<>$1 AND status_baca='Belum Dibaca'`, [req.user.id_pengguna]
+    `UPDATE pesan_chat SET status_baca='Sudah Dibaca' WHERE id_chat IN (
+       SELECT id_chat FROM chat WHERE id_pengguna=$1 AND id_penjual IS NULL
+         AND (($2::int IS NOT NULL AND id_chat=$2) OR ($2::int IS NULL AND id_hewan IS NULL))
+     ) AND id_pengirim<>$1 AND status_baca='Belum Dibaca'`, [req.user.id_pengguna,chatId]
   );
-  const result = await db.query(
-    `SELECT c.id_chat,c.status,COALESCE(json_agg(json_build_object('id_pesan',m.id_pesan,'id_pengirim',m.id_pengirim,'isi_pesan',m.isi_pesan,'waktu_kirim',m.waktu_kirim,'status_baca',m.status_baca) ORDER BY m.waktu_kirim) FILTER (WHERE m.id_pesan IS NOT NULL),'[]') AS messages
-     FROM chat c LEFT JOIN pesan_chat m ON m.id_chat=c.id_chat WHERE c.id_pengguna=$1 AND c.id_penjual IS NULL GROUP BY c.id_chat ORDER BY c.id_chat DESC LIMIT 1`,
-    [req.user.id_pengguna]
-  );
-  res.json(result.rows[0] || null);
+  res.json(await loadSupportChat(req.user.id_pengguna,chatId));
 }));
 
 app.get('/api/chat/penjual', requireUser, asyncRoute(async (req, res) => {
@@ -1158,15 +1229,20 @@ app.delete('/api/admin/chat/:id', requireUser, requireAdmin, asyncRoute(async (r
 }));
 
 app.get('/api/admin/chat/:id', requireUser, requireAdmin, asyncRoute(async (req, res) => {
+  await ensureFeatureSchema();
   await db.query(
     `UPDATE pesan_chat SET status_baca='Sudah Dibaca' WHERE id_chat=$1 AND id_pengirim=(SELECT id_pengguna FROM chat WHERE id_chat=$1)
      AND status_baca='Belum Dibaca'`, [req.params.id]
   );
   const result = await db.query(
     `SELECT c.id_chat,c.id_pengguna,c.status,u.nama,u.email,
+      CASE WHEN h.id_hewan IS NULL THEN NULL ELSE json_build_object(
+        'id_hewan',h.id_hewan,'nama',h.nama,'deskripsi',h.deskripsi,'harga',h.harga,
+        'foto_url',(SELECT g.url FROM gambar_hewan g WHERE g.id_hewan=h.id_hewan ORDER BY g.gambar_utama DESC,g.id_gambar LIMIT 1)
+      ) END AS hewan,
       COALESCE(json_agg(json_build_object('id_pesan',m.id_pesan,'id_pengirim',m.id_pengirim,'isi_pesan',m.isi_pesan,'waktu_kirim',m.waktu_kirim,'status_baca',m.status_baca) ORDER BY m.waktu_kirim) FILTER (WHERE m.id_pesan IS NOT NULL),'[]') AS messages
-     FROM chat c JOIN pengguna u ON u.id_pengguna=c.id_pengguna LEFT JOIN pesan_chat m ON m.id_chat=c.id_chat
-     WHERE c.id_chat=$1 GROUP BY c.id_chat,u.id_pengguna`, [req.params.id]
+     FROM chat c JOIN pengguna u ON u.id_pengguna=c.id_pengguna LEFT JOIN hewan h ON h.id_hewan=c.id_hewan LEFT JOIN pesan_chat m ON m.id_chat=c.id_chat
+     WHERE c.id_chat=$1 GROUP BY c.id_chat,u.id_pengguna,h.id_hewan`, [req.params.id]
   );
   if (!result.rows[0]) return fail(res,404,'Percakapan tidak ditemukan.');
   res.json(result.rows[0]);
@@ -1197,8 +1273,16 @@ app.post('/api/chat/pesan', requireUser, asyncRoute(async (req, res) => {
   const client = await db.connect();
   try {
     await client.query('BEGIN');
-    const existing = await client.query('SELECT id_chat FROM chat WHERE id_pengguna=$1 AND id_penjual IS NULL ORDER BY id_chat DESC LIMIT 1 FOR UPDATE', [req.user.id_pengguna]);
-    const chatId = existing.rows[0]?.id_chat ?? (await client.query("INSERT INTO chat (id_pengguna,id_penjual,status) VALUES ($1,NULL,'Aktif') RETURNING id_chat", [req.user.id_pengguna])).rows[0].id_chat;
+    const requestedChatId=req.body?.id_chat?parseNumber(req.body.id_chat,'Percakapan',{min:1,integer:true}):null;
+    let chatId;
+    if(requestedChatId){
+      const existing=await client.query('SELECT id_chat FROM chat WHERE id_chat=$1 AND id_pengguna=$2 AND id_penjual IS NULL FOR UPDATE',[requestedChatId,req.user.id_pengguna]);
+      if(!existing.rows[0]){await client.query('ROLLBACK');return fail(res,404,'Percakapan tidak ditemukan.');}
+      chatId=existing.rows[0].id_chat;
+    }else{
+      const existing = await client.query('SELECT id_chat FROM chat WHERE id_pengguna=$1 AND id_penjual IS NULL AND id_hewan IS NULL ORDER BY id_chat DESC LIMIT 1 FOR UPDATE', [req.user.id_pengguna]);
+      chatId = existing.rows[0]?.id_chat ?? (await client.query("INSERT INTO chat (id_pengguna,id_penjual,status) VALUES ($1,NULL,'Aktif') RETURNING id_chat", [req.user.id_pengguna])).rows[0].id_chat;
+    }
     const result = await client.query('INSERT INTO pesan_chat (id_chat,id_pengirim,isi_pesan) VALUES ($1,$2,$3) RETURNING *', [chatId,req.user.id_pengguna,text]);
     const admins=await client.query("SELECT id_pengguna FROM pengguna WHERE role='staff_admin'");
     for(const admin of admins.rows){

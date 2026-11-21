@@ -4,7 +4,7 @@ Web katalog dan pemesanan ternak dengan HTML, CSS, JavaScript, Express, dan Post
 
 ## Menjalankan aplikasi
 
-1. Buat database PostgreSQL bernama `my_kandang`, lalu jalankan [`my_kandang.sql`](my_kandang.sql) satu kali pada database kosong. File ini membuat tabel dan memasukkan data contoh.
+1. Buat database PostgreSQL bernama `my_kandang`, lalu jalankan [`my_kandang.sql`](my_kandang.sql) satu kali pada database kosong. File tunggal ini membuat semua tabel aplikasi dan memasukkan data contoh.
 2. Siapkan `backend/.env` memakai `backend/.env.example` sebagai acuan. Pastikan `DB_NAME=my_kandang` dan isi kredensial PostgreSQL milikmu.
 3. Dari folder `backend`, jalankan `npm install`, lalu `npm start`.
 4. Buka `http://localhost:3000`.
@@ -16,14 +16,14 @@ Web katalog dan pemesanan ternak dengan HTML, CSS, JavaScript, Express, dan Post
 - Wishlist: `wishlist`.
 - Keranjang dan checkout dengan validasi stok: `keranjang`, `detail_keranjang`.
 - Pesanan, item pesanan, pembatalan, dan stok: `pesanan`, `detail_pesanan`.
-- Metode, tautan bukti pembayaran Google Drive, dan status pembayaran: `pembayaran`. Konfirmasi tetap dilakukan admin secara manual; belum ada payment gateway atau unggah berkas langsung.
+- Pembayaran otomatis: pesanan langsung ditandai berhasil tanpa membuat Virtual Account atau mengirim transaksi ke bank.
 - Ulasan rating dan komentar: `ulasan`. Ulasan hanya dapat dikirim untuk item pada pesanan selesai.
 - Pesan pengguna dan balasan admin, termasuk status baca: `chat`, `pesan_chat`.
 - CRUD kategori (`kategori_hewan`) dan katalog hewan (`hewan`), termasuk foto utama. Penghapusan kategori diblokir saat masih dipakai; hewan yang sudah punya transaksi atau ulasan dipertahankan agar riwayat tetap utuh.
 - Item keranjang (`detail_keranjang`) dapat ditambahkan, dibaca, diubah jumlahnya, dan dihapus oleh pengguna.
 - Panel `staff_admin`: mengelola kategori/hewan, transaksi, dan percakapan; akun pelanggan serta seluruh data terkaitnya dapat dihapus dengan konfirmasi. Akun admin dilindungi dari penghapusan.
 
-Database belum memiliki tabel penjual/UMKM, alamat terpisah, jadwal serah-terima, notifikasi, atau payment gateway. Karena itu UI tidak menyimpan informasi tersebut. Kolom umur pada SQL hanya bertipe angka; aplikasi menganggap nilainya dalam bulan sesuai data contoh proyek.
+Skema tambahan untuk alamat, penjual, jadwal serah-terima, dan notifikasi tersedia di bagian `APP FEATURE SCHEMA` pada `my_kandang.sql`; backend mengambil bagian tersebut saat memerlukan migrasi fitur. Pembayaran otomatis pada aplikasi ini tidak membuat Virtual Account atau mengirim transaksi ke bank. Kolom umur pada SQL hanya bertipe angka; aplikasi menganggap nilainya dalam bulan sesuai data contoh proyek.
 
 ## Akun awal
 

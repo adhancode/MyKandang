@@ -71,18 +71,17 @@ function parseNumber(value, label, { min = 0, optional = false, integer = false 
   return number;
 }
 
-function isGoogleDriveLink(value) {
-  try {
-    const url = new URL(value);
-    return url.protocol === 'https:' && url.hostname === 'drive.google.com' && !url.port && !url.username && !url.password && url.pathname !== '/';
-  } catch { return false; }
-}
-
 let featureSchemaPromise;
 async function ensureFeatureSchema() {
   if (!featureSchemaPromise) {
     featureSchemaPromise = (async () => {
-      const sql = fs.readFileSync(path.join(__dirname, 'feature-schema.sql'), 'utf8');
+      const masterSql = fs.readFileSync(path.join(__dirname, '..', 'my_kandang.sql'), 'utf8');
+      const startMarker = '-- BEGIN APP FEATURE SCHEMA';
+      const endMarker = '-- END APP FEATURE SCHEMA';
+      const start = masterSql.indexOf(startMarker);
+      const end = masterSql.indexOf(endMarker, start + startMarker.length);
+      if (start < 0 || end < 0) throw new Error('Bagian skema fitur tidak ditemukan di my_kandang.sql.');
+      const sql = masterSql.slice(start + startMarker.length, end).trim();
       const client = await db.connect();
       try {
         await client.query('BEGIN');
@@ -146,6 +145,11 @@ function publicAnimal(row) {
     price: Number(row.harga),
     stockCount: Number(row.stok),
     id_penjual: row.id_penjual || null,
+    nama_penjual: row.nama_penjual || null,
+    lokasi: row.lokasi_penjual || null,
+    location: row.lokasi_penjual || null,
+    rating_penjual: row.rating_penjual == null ? null : Number(row.rating_penjual),
+    estimasi_biaya_transportasi: row.estimasi_biaya_transportasi == null ? null : Number(row.estimasi_biaya_transportasi),
     stock: row.stok > 0 && !['Terjual', 'Habis'].includes(row.status) ? 'Tersedia' : row.status === 'Terjual' ? 'Terjual' : 'Habis',
     description: row.deskripsi || '',
     status: row.status,
@@ -160,8 +164,11 @@ const animalSelect = `
     COALESCE((SELECT json_agg(json_build_object('url', g.url, 'utama', g.gambar_utama) ORDER BY g.gambar_utama DESC, g.id_gambar)
       FROM gambar_hewan g WHERE g.id_hewan = h.id_hewan), '[]'::json) AS images,
     (SELECT AVG(u.rating)::numeric(3,2) FROM ulasan u WHERE u.id_hewan = h.id_hewan) AS rating,
-    (SELECT COUNT(*) FROM ulasan u WHERE u.id_hewan = h.id_hewan) AS review_count
-  FROM hewan h JOIN kategori_hewan k ON k.id_kategori = h.id_kategori`;
+    (SELECT COUNT(*) FROM ulasan u WHERE u.id_hewan = h.id_hewan) AS review_count,
+    s.nama_toko AS nama_penjual,s.alamat AS lokasi_penjual,s.estimasi_biaya_transportasi,
+    (SELECT AVG(u.rating)::numeric(3,2) FROM ulasan u JOIN hewan hs ON hs.id_hewan=u.id_hewan WHERE hs.id_penjual=s.id_penjual) AS rating_penjual
+  FROM hewan h JOIN kategori_hewan k ON k.id_kategori = h.id_kategori
+  LEFT JOIN penjual s ON s.id_penjual = h.id_penjual`;
 
 app.get('/api/db-test', asyncRoute(async (_req, res) => {
   const result = await db.query('SELECT current_database() AS database, NOW() AS waktu');
@@ -187,15 +194,17 @@ app.post('/api/auth/register', asyncRoute(async (req, res) => {
 }));
 
 app.post('/api/auth/login', asyncRoute(async (req, res) => {
-  const { email, password } = req.body || {};
-  if (!email || !password) return fail(res, 400, 'Email dan kata sandi wajib diisi.');
-  const result = await db.query('SELECT * FROM pengguna WHERE lower(email)=lower($1)', [email.trim()]);
+  const identifier=String(req.body?.identifier||req.body?.email||'').trim();
+  const password=req.body?.password;
+  if (!identifier || !password) return fail(res, 400, 'Email atau nomor HP dan kata sandi wajib diisi.');
+  const phoneDigits=identifier.replace(/\D/g,'');
+  const result = await db.query("SELECT * FROM pengguna WHERE lower(email)=lower($1) OR ($2<>'' AND regexp_replace(COALESCE(no_telepon,''),'[^0-9]','','g')=$2) ORDER BY id_pengguna LIMIT 1", [identifier,phoneDigits]);
   const row = result.rows[0];
-  if (!row || !row.password_hash.startsWith('scrypt:')) return fail(res, 401, 'Email atau kata sandi tidak sesuai.');
+  if (!row || !row.password_hash.startsWith('scrypt:')) return fail(res, 401, 'Email/nomor HP atau kata sandi tidak sesuai.');
   const [, salt, expectedHex] = row.password_hash.split(':');
   const actual = await scrypt(password, salt, 64);
   const expected = Buffer.from(expectedHex, 'hex');
-  if (actual.length !== expected.length || !crypto.timingSafeEqual(actual, expected)) return fail(res, 401, 'Email atau kata sandi tidak sesuai.');
+  if (actual.length !== expected.length || !crypto.timingSafeEqual(actual, expected)) return fail(res, 401, 'Email/nomor HP atau kata sandi tidak sesuai.');
   const user = { id_pengguna: row.id_pengguna, nama: row.nama, email: row.email, no_telepon: row.no_telepon, alamat: row.alamat, role: row.role };
   const token = createAuthToken(user);
   res.json({ token, user });
@@ -249,6 +258,7 @@ app.delete('/api/admin/kategori/:id', requireUser, requireAdmin, asyncRoute(asyn
 }));
 
 app.get('/api/hewan', asyncRoute(async (req, res) => {
+  await ensureFeatureSchema();
   const values = [];
   const where = [];
   if (req.query.q) {
@@ -266,6 +276,7 @@ app.get('/api/hewan', asyncRoute(async (req, res) => {
 }));
 
 app.get('/api/hewan/:id', asyncRoute(async (req, res) => {
+  await ensureFeatureSchema();
   const result = await db.query(`${animalSelect} WHERE h.id_hewan=$1`, [req.params.id]);
   if (!result.rows[0]) return fail(res, 404, 'Hewan tidak ditemukan.');
   res.json(publicAnimal(result.rows[0]));
@@ -294,6 +305,23 @@ app.patch('/api/profil', requireUser, asyncRoute(async (req, res) => {
   );
   Object.assign(req.user, result.rows[0]);
   res.json(result.rows[0]);
+}));
+
+app.patch('/api/profil/password', requireUser, asyncRoute(async (req, res) => {
+  const currentPassword=String(req.body?.current_password||'');
+  const newPassword=String(req.body?.new_password||'');
+  if(newPassword.length<8)return fail(res,400,'Kata sandi baru minimal 8 karakter.');
+  const result=await db.query('SELECT password_hash FROM pengguna WHERE id_pengguna=$1',[req.user.id_pengguna]);
+  const saved=result.rows[0]?.password_hash||'';
+  if(!saved.startsWith('scrypt:'))return fail(res,409,'Kata sandi akun ini belum dapat diubah dari web.');
+  const [,salt,expectedHex]=saved.split(':');
+  const actual=await scrypt(currentPassword,salt,64);
+  const expected=Buffer.from(expectedHex,'hex');
+  if(actual.length!==expected.length||!crypto.timingSafeEqual(actual,expected))return fail(res,401,'Kata sandi saat ini tidak sesuai.');
+  const nextSalt=crypto.randomBytes(16).toString('hex');
+  const nextHash=await scrypt(newPassword,nextSalt,64);
+  await db.query('UPDATE pengguna SET password_hash=$1 WHERE id_pengguna=$2',[`scrypt:${nextSalt}:${nextHash.toString('hex')}`,req.user.id_pengguna]);
+  res.json({message:'Kata sandi berhasil diperbarui.'});
 }));
 
 app.get('/api/alamat', requireUser, asyncRoute(async (req, res) => {
@@ -404,7 +432,7 @@ app.get('/api/penjual', asyncRoute(async (_req, res) => {
 app.get('/api/penjual/saya', requireUser, asyncRoute(async (req, res) => {
   await ensureFeatureSchema();
   const result=await db.query(
-    'SELECT id_penjual,id_pengguna,nama_toko,deskripsi,no_telepon,alamat,foto_url,status,dibuat FROM penjual WHERE id_pengguna=$1',
+    'SELECT id_penjual,id_pengguna,nama_toko,deskripsi,no_telepon,alamat,foto_url,estimasi_biaya_transportasi,status,dibuat FROM penjual WHERE id_pengguna=$1',
     [req.user.id_pengguna]
   );
   res.json(result.rows[0]||null);
@@ -417,16 +445,17 @@ app.post('/api/penjual/saya', requireUser, asyncRoute(async (req, res) => {
   const phone=req.body?.no_telepon?.trim()||null;
   const address=req.body?.alamat?.trim()||null;
   const photo=req.body?.foto_url?.trim()||null;
+  const transportCost=req.body?.estimasi_biaya_transportasi==null||req.body.estimasi_biaya_transportasi===''?null:parseNumber(req.body.estimasi_biaya_transportasi,'Estimasi biaya transportasi',{min:0,integer:true});
   if(!nama)return fail(res,400,'Nama usaha wajib diisi.');
   if(photo){try{const url=new URL(photo);if(!['http:','https:'].includes(url.protocol))throw new Error();}catch{return fail(res,400,'URL foto profil tidak valid.');}}
   const result=await db.query(
-    `INSERT INTO penjual(id_pengguna,nama_toko,deskripsi,no_telepon,alamat,foto_url,status)
-     VALUES ($1,$2,$3,$4,$5,$6,'Menunggu')
+    `INSERT INTO penjual(id_pengguna,nama_toko,deskripsi,no_telepon,alamat,foto_url,estimasi_biaya_transportasi,status)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,'Menunggu')
      ON CONFLICT (id_pengguna) DO UPDATE SET nama_toko=EXCLUDED.nama_toko,deskripsi=EXCLUDED.deskripsi,
-       no_telepon=EXCLUDED.no_telepon,alamat=EXCLUDED.alamat,foto_url=EXCLUDED.foto_url,
+       no_telepon=EXCLUDED.no_telepon,alamat=EXCLUDED.alamat,foto_url=EXCLUDED.foto_url,estimasi_biaya_transportasi=EXCLUDED.estimasi_biaya_transportasi,
        status=CASE WHEN penjual.status='Aktif' THEN 'Aktif' ELSE 'Menunggu' END
-     RETURNING id_penjual,id_pengguna,nama_toko,deskripsi,no_telepon,alamat,foto_url,status,dibuat`,
-    [req.user.id_pengguna,nama,description,phone,address,photo]
+     RETURNING id_penjual,id_pengguna,nama_toko,deskripsi,no_telepon,alamat,foto_url,estimasi_biaya_transportasi,status,dibuat`,
+    [req.user.id_pengguna,nama,description,phone,address,photo,transportCost]
   );
   res.status(201).json(result.rows[0]);
 }));
@@ -442,7 +471,12 @@ app.get('/api/penjual/:id', asyncRoute(async (req, res) => {
   );
   if(!result.rows[0])return fail(res,404,'Profil penjual tidak ditemukan.');
   const animals=await db.query(`${animalSelect} WHERE h.id_penjual=$1 AND h.stok>0 AND h.status='Tersedia' ORDER BY h.id_hewan DESC`,[req.params.id]);
-  res.json({...result.rows[0],animals:animals.rows.map(publicAnimal)});
+  const reviews=await db.query(
+    `SELECT u.id_ulasan,u.rating,u.komentar,u.tanggal,p.nama AS nama_pengguna,h.nama AS nama_hewan
+     FROM ulasan u JOIN hewan h ON h.id_hewan=u.id_hewan JOIN pengguna p ON p.id_pengguna=u.id_pengguna
+     WHERE h.id_penjual=$1 ORDER BY u.tanggal DESC,u.id_ulasan DESC LIMIT 20`,[req.params.id]
+  );
+  res.json({...result.rows[0],animals:animals.rows.map(publicAnimal),reviews:reviews.rows});
 }));
 
 app.get('/api/hewan/:id/penjual', asyncRoute(async (req, res) => {
@@ -555,11 +589,11 @@ app.get('/api/admin/pesanan', requireUser, requireAdmin, asyncRoute(async (_req,
   const result = await db.query(
     `SELECT p.*,u.nama AS nama_pelanggan,u.email,
       COALESCE(json_agg(json_build_object('id_hewan',h.id_hewan,'nama',h.nama,'kuantitas',dp.kuantitas,'harga_satuan',dp.harga_satuan,'subtotal',dp.subtotal)) FILTER (WHERE h.id_hewan IS NOT NULL),'[]') AS details,
-      pb.status AS status_pembayaran,pb.metode AS metode_pembayaran,pb.jumlah AS jumlah_pembayaran,pb.bukti
+      pb.status AS status_pembayaran,pb.metode AS metode_pembayaran,pb.jumlah AS jumlah_pembayaran
      FROM pesanan p JOIN pengguna u ON u.id_pengguna=p.id_pengguna
      LEFT JOIN detail_pesanan dp ON dp.id_pesanan=p.id_pesanan LEFT JOIN hewan h ON h.id_hewan=dp.id_hewan
      LEFT JOIN pembayaran pb ON pb.id_pesanan=p.id_pesanan
-     GROUP BY p.id_pesanan,u.id_pengguna,pb.status,pb.metode,pb.jumlah,pb.bukti ORDER BY p.tgl_pesanan DESC`
+     GROUP BY p.id_pesanan,u.id_pengguna,pb.status,pb.metode,pb.jumlah ORDER BY p.tgl_pesanan DESC`
   );
   res.json(result.rows);
 }));
@@ -703,6 +737,7 @@ app.patch('/api/admin/pesanan/:id', requireUser, requireAdmin, asyncRoute(async 
 }));
 
 app.get('/api/wishlist', requireUser, asyncRoute(async (req, res) => {
+  await ensureFeatureSchema();
   const result = await db.query(
     `${animalSelect} JOIN wishlist w ON w.id_hewan=h.id_hewan WHERE w.id_pengguna=$1 ORDER BY w.tanggal_ditambahkan DESC`,
     [req.user.id_pengguna]
@@ -731,6 +766,7 @@ async function getOrCreateCart(client, userId) {
 }
 
 app.get('/api/keranjang', requireUser, asyncRoute(async (req, res) => {
+  await ensureFeatureSchema();
   const client = await db.connect();
   try {
     const cartId = await getOrCreateCart(client, req.user.id_pengguna);
@@ -826,7 +862,9 @@ app.post('/api/pesanan', requireUser, asyncRoute(async (req, res) => {
       address=selected.rows[0].alamat;
     }
     const animalIds = items.map(item => item.id_hewan);
-    const locked = await client.query('SELECT id_hewan,harga,stok,status FROM hewan WHERE id_hewan=ANY($1::int[]) FOR UPDATE', [animalIds]);
+    const locked = featureFields
+      ? await client.query('SELECT h.id_hewan,h.harga,h.stok,h.status,h.id_penjual,s.estimasi_biaya_transportasi FROM hewan h LEFT JOIN penjual s ON s.id_penjual=h.id_penjual WHERE h.id_hewan=ANY($1::int[]) FOR UPDATE OF h', [animalIds])
+      : await client.query('SELECT id_hewan,harga,stok,status FROM hewan WHERE id_hewan=ANY($1::int[]) FOR UPDATE', [animalIds]);
     const byId = new Map(locked.rows.map(row => [String(row.id_hewan), row]));
     if (byId.size !== new Set(animalIds.map(String)).size) { await client.query('ROLLBACK'); return fail(res, 404, 'Salah satu hewan tidak ditemukan.'); }
     let total = 0;
@@ -837,12 +875,17 @@ app.post('/api/pesanan', requireUser, asyncRoute(async (req, res) => {
       const price = Number(animal.harga);
       if (price <= 0) throw Object.assign(new Error('Harga hewan belum diatur oleh admin.'), { status: 409 });
       total += price * quantity;
-      return { id: animal.id_hewan, price, quantity, stock: animal.stok };
+      return { id: animal.id_hewan, price, quantity, stock: animal.stok, sellerId: animal.id_penjual, transportEstimate: animal.estimasi_biaya_transportasi==null?null:Number(animal.estimasi_biaya_transportasi) };
     });
+    const distinctSellerRates=new Map();
+    for(const item of normalized)if(item.sellerId)distinctSellerRates.set(Number(item.sellerId),item.transportEstimate);
+    const transportNeedsConfirmation=method==='Kirim Kurir'&&(!normalized.length||normalized.some(item=>!item.sellerId||item.transportEstimate==null));
+    const transportEstimate=method==='Ambil di Kandang'?0:transportNeedsConfirmation?null:[...distinctSellerRates.values()].reduce((sum,value)=>sum+value,0);
+    if(featureFields&&transportEstimate!=null)total+=transportEstimate;
     const order = featureFields ? await client.query(
-      `INSERT INTO pesanan (id_pengguna,total_harga,metode_serah_terima,alamat_pengiriman,jadwal_serah_terima,status_pesanan)
-       VALUES ($1,$2,$3,$4,$5,'Pending') RETURNING *`,
-      [req.user.id_pengguna,total,method,address,handoffSchedule]
+      `INSERT INTO pesanan (id_pengguna,total_harga,metode_serah_terima,alamat_pengiriman,jadwal_serah_terima,estimasi_biaya_transportasi,status_pesanan)
+       VALUES ($1,$2,$3,$4,$5,$6,'Pending') RETURNING *`,
+      [req.user.id_pengguna,total,method,address,handoffSchedule,transportEstimate]
     ) : await client.query(
       `INSERT INTO pesanan (id_pengguna,total_harga,metode_serah_terima,alamat_pengiriman,status_pesanan)
        VALUES ($1,$2,$3,$4,'Pending') RETURNING *`,
@@ -870,10 +913,11 @@ app.post('/api/pesanan', requireUser, asyncRoute(async (req, res) => {
 }));
 
 app.get('/api/pesanan', requireUser, asyncRoute(async (req, res) => {
+  await ensureFeatureSchema();
   const result = await db.query(
-    `SELECT p.*, COALESCE(json_agg(json_build_object('id_hewan',h.id_hewan,'nama',h.nama,'harga_satuan',dp.harga_satuan,'kuantitas',dp.kuantitas,'subtotal',dp.subtotal,'sudah_diulas',EXISTS(SELECT 1 FROM ulasan u WHERE u.id_pesanan=p.id_pesanan AND u.id_hewan=h.id_hewan AND u.id_pengguna=p.id_pengguna))) FILTER (WHERE h.id_hewan IS NOT NULL),'[]') AS details,
+    `SELECT p.*, COALESCE(json_agg(json_build_object('id_hewan',h.id_hewan,'nama',h.nama,'id_penjual',h.id_penjual,'nama_penjual',s.nama_toko,'harga_satuan',dp.harga_satuan,'kuantitas',dp.kuantitas,'subtotal',dp.subtotal,'sudah_diulas',EXISTS(SELECT 1 FROM ulasan u WHERE u.id_pesanan=p.id_pesanan AND u.id_hewan=h.id_hewan AND u.id_pengguna=p.id_pengguna))) FILTER (WHERE h.id_hewan IS NOT NULL),'[]') AS details,
       pb.status AS status_pembayaran,pb.metode AS metode_pembayaran,pb.jumlah AS jumlah_pembayaran
-     FROM pesanan p LEFT JOIN detail_pesanan dp ON dp.id_pesanan=p.id_pesanan LEFT JOIN hewan h ON h.id_hewan=dp.id_hewan
+     FROM pesanan p LEFT JOIN detail_pesanan dp ON dp.id_pesanan=p.id_pesanan LEFT JOIN hewan h ON h.id_hewan=dp.id_hewan LEFT JOIN penjual s ON s.id_penjual=h.id_penjual
      LEFT JOIN pembayaran pb ON pb.id_pesanan=p.id_pesanan WHERE p.id_pengguna=$1
      GROUP BY p.id_pesanan,pb.status,pb.metode,pb.jumlah ORDER BY p.tgl_pesanan DESC`, [req.user.id_pengguna]
   );
@@ -881,9 +925,11 @@ app.get('/api/pesanan', requireUser, asyncRoute(async (req, res) => {
 }));
 
 app.get('/api/pesanan/:id', requireUser, asyncRoute(async (req, res) => {
+  await ensureFeatureSchema();
   const result = await db.query(
     `SELECT p.*, COALESCE(json_agg(json_build_object('id_hewan',h.id_hewan,'nama',h.nama,'harga_satuan',dp.harga_satuan,'kuantitas',dp.kuantitas,'subtotal',dp.subtotal,'sudah_diulas',EXISTS(SELECT 1 FROM ulasan u WHERE u.id_pesanan=p.id_pesanan AND u.id_hewan=h.id_hewan AND u.id_pengguna=p.id_pengguna))) FILTER (WHERE h.id_hewan IS NOT NULL),'[]') AS details,
-      pb.id_pembayaran,pb.status AS status_pembayaran,pb.metode AS metode_pembayaran,pb.jumlah AS jumlah_pembayaran,pb.tanggal_bayar,pb.bukti
+      pb.id_pembayaran,pb.status AS status_pembayaran,pb.metode AS metode_pembayaran,pb.jumlah AS jumlah_pembayaran,
+      pb.tanggal_bayar
      FROM pesanan p LEFT JOIN detail_pesanan dp ON dp.id_pesanan=p.id_pesanan LEFT JOIN hewan h ON h.id_hewan=dp.id_hewan
      LEFT JOIN pembayaran pb ON pb.id_pesanan=p.id_pesanan WHERE p.id_pengguna=$1 AND p.id_pesanan=$2
      GROUP BY p.id_pesanan,pb.id_pembayaran`, [req.user.id_pengguna,req.params.id]
@@ -893,37 +939,67 @@ app.get('/api/pesanan/:id', requireUser, asyncRoute(async (req, res) => {
 }));
 
 app.patch('/api/pesanan/:id/batal', requireUser, asyncRoute(async (req, res) => {
+  const reason=String(req.body?.alasan_pembatalan||'').trim();
+  if(reason.length>500)return fail(res,400,'Alasan pembatalan maksimal 500 karakter.');
+  let featureSchemaReady=false;
+  try{await ensureFeatureSchema();featureSchemaReady=true;}
+  catch(error){console.error('Alasan pembatalan belum tersedia; pesanan tetap memakai alur lama:',error.message);}
   const client = await db.connect();
   try {
     await client.query('BEGIN');
-    const found = await client.query("SELECT p.id_pesanan,p.status_pesanan,pb.status AS status_pembayaran FROM pesanan p LEFT JOIN pembayaran pb ON pb.id_pesanan=p.id_pesanan WHERE p.id_pesanan=$1 AND p.id_pengguna=$2 FOR UPDATE OF p", [req.params.id,req.user.id_pengguna]);
+    const found = await client.query('SELECT p.id_pesanan,p.status_pesanan,pb.status AS status_pembayaran FROM pesanan p LEFT JOIN pembayaran pb ON pb.id_pesanan=p.id_pesanan WHERE p.id_pesanan=$1 AND p.id_pengguna=$2 FOR UPDATE OF p', [req.params.id,req.user.id_pengguna]);
     if (!found.rows[0]) { await client.query('ROLLBACK'); return fail(res,404,'Pesanan tidak ditemukan.'); }
     if (found.rows[0].status_pesanan !== 'Pending') { await client.query('ROLLBACK'); return fail(res,409,'Pesanan yang sudah diproses tidak dapat dibatalkan dari web.'); }
-    if (found.rows[0].status_pembayaran === 'Berhasil') { await client.query('ROLLBACK'); return fail(res,409,'Pesanan yang sudah dibayar perlu ditangani langsung oleh staff.'); }
-    await client.query("UPDATE pesanan SET status_pesanan='Dibatalkan' WHERE id_pesanan=$1", [req.params.id]);
+    if(featureSchemaReady)await client.query("UPDATE pesanan SET status_pesanan='Dibatalkan',alasan_pembatalan=$2 WHERE id_pesanan=$1", [req.params.id,reason||null]);
+    else await client.query("UPDATE pesanan SET status_pesanan='Dibatalkan' WHERE id_pesanan=$1", [req.params.id]);
+    // Pembayaran di aplikasi ini hanya status simulasi otomatis, jadi batalkan statusnya tanpa refund transaksi nyata.
+    if(found.rows[0].status_pembayaran==='Berhasil')await client.query("UPDATE pembayaran SET status='Belum Dibayar',tanggal_bayar=NULL WHERE id_pesanan=$1",[req.params.id]);
     const items = await client.query('SELECT id_hewan,kuantitas FROM detail_pesanan WHERE id_pesanan=$1', [req.params.id]);
     for (const item of items.rows) await client.query("UPDATE hewan SET stok=stok+$1,status=CASE WHEN status IN ('Habis','Terjual') THEN 'Tersedia' ELSE status END WHERE id_hewan=$2", [item.kuantitas,item.id_hewan]);
     await client.query('COMMIT');
+    try{
+      if(!featureSchemaReady)await ensureFeatureSchema();
+      const sellers=await db.query('SELECT DISTINCT s.id_pengguna,s.nama_toko FROM detail_pesanan d JOIN hewan h ON h.id_hewan=d.id_hewan JOIN penjual s ON s.id_penjual=h.id_penjual WHERE d.id_pesanan=$1 AND s.status=\'Aktif\'',[req.params.id]);
+      for(const seller of sellers.rows)await createNotification(db,seller.id_pengguna,'Pesanan dibatalkan',`Pesanan #${req.params.id} dibatalkan pembeli${reason?`: ${reason}`:''}.`,'order',{id_pesanan:Number(req.params.id)});
+    }catch(error){console.error('Notifikasi pembatalan pesanan gagal disimpan:',error.message);}
     res.json({ status_pesanan:'Dibatalkan' });
   } catch (error) { await client.query('ROLLBACK'); throw error; }
   finally { client.release(); }
 }));
 
 app.post('/api/pesanan/:id/pembayaran', requireUser, asyncRoute(async (req, res) => {
-  const metode = req.body?.metode;
-  if (!metode?.trim()) return fail(res,400,'Metode pembayaran wajib dipilih.');
-  const bukti = req.body?.bukti?.trim() || null;
-  if (bukti && bukti.length>255) return fail(res,400,'Tautan Google Drive maksimal 255 karakter.');
-  if (bukti && !isGoogleDriveLink(bukti)) return fail(res,400,'Gunakan tautan berbagi Google Drive yang diawali https://drive.google.com/.');
-  const result = await db.query(
-    `UPDATE pembayaran pb SET metode=$1,bukti=$2,status='Belum Dibayar'
-     FROM pesanan p WHERE pb.id_pesanan=p.id_pesanan AND p.id_pengguna=$3 AND p.id_pesanan=$4
-       AND pb.status='Belum Dibayar' AND p.status_pesanan<>'Dibatalkan'
-     RETURNING pb.id_pembayaran,pb.id_pesanan,pb.jumlah,pb.metode,pb.status,pb.tanggal_bayar,pb.bukti`,
-    [metode.trim(),bukti,req.user.id_pengguna,req.params.id]
-  );
-  if (!result.rows[0]) return fail(res,404,'Pembayaran untuk pesanan ini tidak ditemukan.');
-  res.json(result.rows[0]);
+  const metode=req.body?.metode;
+  const supportedMethods=[
+    'BCA (Bank Central Asia)',
+    'BRI (Bank Rakyat Indonesia)',
+    'BNI (Bank Negara Indonesia)',
+    'Bank Mandiri',
+    'BSI (Bank Syariah Indonesia)',
+    'GoPay','DANA','OVO','ShopeePay','LinkAja',
+  ];
+  if(!supportedMethods.includes(metode))return fail(res,400,'Metode pembayaran tidak valid.');
+  const client=await db.connect();
+  try{
+    await client.query('BEGIN');
+    const result=await client.query(
+      `SELECT p.id_pesanan,p.status_pesanan,pb.status AS status_pembayaran
+       FROM pesanan p JOIN pembayaran pb ON pb.id_pesanan=p.id_pesanan
+       WHERE p.id_pesanan=$1 AND p.id_pengguna=$2 FOR UPDATE OF p,pb`,
+      [req.params.id,req.user.id_pengguna]
+    );
+    const order=result.rows[0];
+    if(!order){await client.query('ROLLBACK');return fail(res,404,'Pesanan tidak ditemukan.');}
+    if(order.status_pesanan==='Dibatalkan'){await client.query('ROLLBACK');return fail(res,409,'Pesanan yang dibatalkan tidak dapat dibayar.');}
+    const saved=await client.query(
+      `UPDATE pembayaran SET metode=$1,status='Berhasil',bukti=NULL,
+        tanggal_bayar=COALESCE(tanggal_bayar,CURRENT_TIMESTAMP)
+       WHERE id_pesanan=$2 RETURNING id_pesanan,status,metode,tanggal_bayar`,
+      [metode,order.id_pesanan]
+    );
+    await client.query('COMMIT');
+    res.json(saved.rows[0]);
+  }catch(error){await client.query('ROLLBACK');throw error;}
+  finally{client.release();}
 }));
 
 app.post('/api/ulasan', requireUser, asyncRoute(async (req, res) => {

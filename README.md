@@ -4,7 +4,7 @@ Web katalog dan pemesanan ternak dengan HTML, CSS, JavaScript, Express, dan Post
 
 ## Menjalankan aplikasi
 
-1. Buat database PostgreSQL bernama `my_kandang`, lalu jalankan [`my_kandang.sql`](my_kandang.sql) satu kali pada database kosong. File ini membuat tabel dan memasukkan data contoh, termasuk sepuluh hewan.
+1. Buat database PostgreSQL bernama `my_kandang`, lalu jalankan [`my_kandang.sql`](my_kandang.sql) satu kali pada database kosong. File ini membuat tabel dan memasukkan data contoh.
 2. Siapkan `backend/.env` memakai `backend/.env.example` sebagai acuan. Pastikan `DB_NAME=my_kandang` dan isi kredensial PostgreSQL milikmu.
 3. Dari folder `backend`, jalankan `npm install`, lalu `npm start`.
 4. Buka `http://localhost:3000`.

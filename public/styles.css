@@ -374,7 +374,11 @@ form[data-form="seller-application"] .form-label { margin-bottom: 8px; }
 .modal.admin-animal-modal { display: flex; flex-direction: column; height: min(840px, 88vh); max-height: 88vh; overflow: hidden; }
 .modal.admin-animal-modal .modal-head { flex: 0 0 auto; }
 .modal.admin-animal-modal .modal-body { display: flex; flex: 1 1 auto; flex-direction: column; min-height: 0; overflow: hidden; padding: 0; }
+.admin-animal-form { display: flex; flex: 1 1 auto; flex-direction: column; min-height: 0; }
 .admin-animal-scroll { flex: 1 1 auto; min-height: 0; overflow-x: hidden; overflow-y: auto; margin-right: 8px; padding: 19px 22px 22px; scrollbar-width: thin; scrollbar-color: #cbd3c7 transparent; }
+.admin-animal-form .modal-footer { flex: 0 0 auto; }
+.admin-animal-feedback { flex: 1 1 auto; min-width: 0; color: var(--muted); font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; }
+.admin-animal-feedback.error { color: #b42318; }
 .admin-animal-scroll::-webkit-scrollbar { width: 8px; }
 .admin-animal-scroll::-webkit-scrollbar-track { margin-block: 10px; background: transparent; }
 .admin-animal-scroll::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 999px; background: #cbd3c7; background-clip: padding-box; }

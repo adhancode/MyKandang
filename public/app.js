@@ -104,7 +104,8 @@ const isSaved = id => state.saved.has(id);
 const animalClass = item => item.category === 'Unggas' || item.kind === 'Ayam' || item.kind === 'Bebek' ? 'unggas' : item.kind === 'Kambing' ? 'kambing' : item.kind === 'Domba' ? 'domba' : '';
 const animalEmoji = item => ({ Sapi: '🐄', Kambing: '🐐', Domba: '🐑', Ayam: '🐓', Bebek: '🦆' }[item.kind] || '🐾');
 const currentOrder = () => state.currentOrder || state.orders.find(order => Number(order.id_pesanan) === Number(state.currentOrderId));
-const API_BASE = location.hostname === 'localhost' && location.port !== '3000' ? 'http://localhost:3000' : '';
+const isLocalHost = ['localhost', '127.0.0.1', '::1', '[::1]'].includes(location.hostname);
+const API_BASE = isLocalHost && location.port !== '3000' ? 'http://localhost:3000' : '';
 const api = async (path, options = {}) => {
   const headers = { 'Content-Type': 'application/json', ...(state.token ? { Authorization: `Bearer ${state.token}` } : {}), ...(options.headers || {}) };
   const response = await fetch(`${API_BASE}/api${path}`, { ...options, headers });
@@ -225,7 +226,7 @@ function renderOnboarding() {
 }
 
 function renderHome() {
-  const latest = [...animals].slice(0, 4);
+  const latest = [...animals].sort((a,b) => Number(b.id)-Number(a.id)).slice(0, 4);
   return `<section class="page">
     <div class="hero">
       <div class="hero-copy">
@@ -291,6 +292,7 @@ function getFilteredAnimals() {
     if (f.age === 'over2' && item.ageMonths <= 24) return false;
     return true;
   });
+  if (state.sort === 'Terbaru') list.sort((a,b) => Number(b.id)-Number(a.id));
   if (state.sort === 'Termurah') list.sort((a,b) => a.price-b.price);
   if (state.sort === 'Termahal') list.sort((a,b) => b.price-a.price);
   if (state.sort === 'Rating tertinggi') list.sort((a,b) => (b.rating || 0)-(a.rating || 0));
@@ -487,10 +489,16 @@ function renderMessages() {
 
 async function loadAdmin() {
   try{state.adminSellers=await api('/admin/penjual');state.sellerSchemaAvailable=true;}catch{state.adminSellers=[];state.sellerSchemaAvailable=false;}
-  const [summary, productRows, orders, users, chats, categoryRows] = await Promise.all([
-    api('/admin/ringkasan'), api('/hewan'), api('/admin/pesanan'), api('/admin/pengguna'), api('/admin/chat'), api('/kategori'),
+  const [summary, productRows, categoryRows] = await Promise.all([
+    api('/admin/ringkasan'), api('/hewan'), api('/kategori'),
   ]);
-  state.adminSummary=summary;adminAnimals=productRows;animals=orderCatalog(productRows);state.adminOrders=orders;state.adminUsers=users;state.adminChats=chats;categories=categoryRows;
+  const [ordersResult, usersResult, chatsResult] = await Promise.allSettled([
+    api('/admin/pesanan'), api('/admin/pengguna'), api('/admin/chat'),
+  ]);
+  state.adminSummary=summary;adminAnimals=productRows;animals=orderCatalog(productRows);categories=categoryRows;
+  if(ordersResult.status==='fulfilled')state.adminOrders=ordersResult.value;
+  if(usersResult.status==='fulfilled')state.adminUsers=usersResult.value;
+  if(chatsResult.status==='fulfilled')state.adminChats=chatsResult.value;
 }
 
 function renderAdmin() {
@@ -510,7 +518,7 @@ function renderAdmin() {
 function renderAdminAnimalModal(item=null) {
   const editing=Boolean(item);
   const currentImage=item?.images?.find(image=>image.utama)?.url||'';
-  openModal(editing?'Ubah data hewan':'Tambah hewan','Perbarui detail dan foto utama hewan.',`<div class="admin-animal-scroll"><form data-form="admin-animal" data-id="${item?.id||''}"><div class="admin-form-grid">
+  openModal(editing?'Ubah data hewan':'Tambah hewan','Perbarui detail dan foto utama hewan.',`<form class="admin-animal-form" data-form="admin-animal" data-id="${item?.id||''}"><div class="admin-animal-scroll"><div class="admin-form-grid">
     <label class="field-group">Kategori<select class="field" name="id_kategori" required>${categories.map(category=>`<option value="${category.id_kategori}" ${Number(category.id_kategori)===Number(item?.id_kategori)?'selected':''}>${escapeHtml(category.nama_kategori)}</option>`).join('')}</select></label>
     ${state.sellerSchemaAvailable?`<label class="field-group">Penjual<select class="field" name="id_penjual"><option value="">Tanpa penjual langsung</option>${state.adminSellers.filter(seller=>seller.status==='Aktif').map(seller=>`<option value="${seller.id_penjual}" ${String(item?.id_penjual||'')===String(seller.id_penjual)?'selected':''}>${escapeHtml(seller.nama_toko)}</option>`).join('')}</select></label>`:''}
     <label class="field-group">Nama<input class="field" name="nama" value="${escapeHtml(item?.name||'')}" required /></label>
@@ -520,7 +528,7 @@ function renderAdminAnimalModal(item=null) {
     <label class="field-group">Harga (Rp)<input class="field" name="harga" type="number" min="0" step="1" value="${item?.price??''}" required /></label><label class="field-group">Stok<input class="field" name="stok" type="number" min="0" step="1" value="${item?.stockCount??0}" required /></label>
     <label class="field-group">Status<select class="field" name="status">${['Tersedia','Habis','Terjual'].map(status=>`<option ${item?.status===status?'selected':''}>${status}</option>`).join('')}</select></label>
     <div class="admin-animal-photo-editor"><label class="field-group"><span class="form-label">Upload foto hewan</span><input class="field" name="gambar_file" type="file" accept="image/jpeg,image/png,image/webp" data-action="animal-photo-file" /></label><div class="animal-photo-preview" data-animal-photo-preview>${currentImage?`<img src="${escapeHtml(currentImage)}" alt="Foto utama ${escapeHtml(item?.name||'hewan')}" style="width:auto;height:auto;max-width:100%;object-fit:contain" />`:'<span>Pratinjau foto akan muncul di sini</span>'}</div><small>JPG, PNG, atau WebP</small><input type="hidden" name="gambar_url" value="${escapeHtml(currentImage)}" /></div>
-    <label class="field-group admin-description">Deskripsi<textarea class="field" name="deskripsi">${escapeHtml(item?.description||'')}</textarea></label></div><div class="modal-footer"><button type="button" class="button button-secondary" data-action="close-modal">Batal</button><div class="right"><button class="button" type="submit">Simpan</button></div></div></form></div>`,'',true,'admin-animal-modal');
+    <label class="field-group admin-description">Deskripsi<textarea class="field" name="deskripsi">${escapeHtml(item?.description||'')}</textarea></label></div></div><div class="modal-footer"><button type="button" class="button button-secondary" data-action="close-modal">Batal</button><div class="admin-animal-feedback" data-animal-form-feedback role="status" aria-live="polite"></div><div class="right"><button class="button" type="submit">Simpan</button></div></div></form>`,'',true,'admin-animal-modal');
 }
 
 function renderAdminCategoryModal(category=null) {
@@ -1195,11 +1203,31 @@ document.addEventListener('submit', async event => {
     const photoFile=data.gambar_file;
     delete data.gambar_file;
     const id=form.dataset.id;
+    const submitButton=form.querySelector('button[type="submit"]');
+    const feedback=form.querySelector('[data-animal-form-feedback]');
+    if(submitButton){submitButton.disabled=true;submitButton.textContent='Menyimpan…';}
+    if(feedback){feedback.textContent='';feedback.classList.remove('error');}
     try {
       if(photoFile?.size)data.gambar_url=await uploadAnimalPhoto(photoFile);
       await api(id?`/admin/hewan/${id}`:'/admin/hewan',{method:id?'PATCH':'POST',body:JSON.stringify(data)});
-      await loadAdmin();closeModal();render();showToast(id?'Data hewan diperbarui.':'Hewan ditambahkan.');
-    } catch(error) { showToast(error.message); }
+    } catch(error) {
+      if(feedback){feedback.textContent=error.message;feedback.classList.add('error');}
+      if(submitButton){submitButton.disabled=false;submitButton.textContent='Simpan';}
+      showToast(error.message);
+      return;
+    }
+    closeModal();
+    let refreshWarning=false;
+    try { await loadAdmin(); }
+    catch {
+      try {
+        const productRows=await api('/hewan');
+        adminAnimals=productRows;animals=orderCatalog(productRows);
+        if(state.adminSummary)state.adminSummary={...state.adminSummary,jumlah_hewan:productRows.length};
+      } catch { refreshWarning=true; }
+    }
+    render();
+    showToast(refreshWarning?'Hewan berhasil disimpan, tetapi panel belum diperbarui. Muat ulang halaman.':id?'Data hewan diperbarui.':'Hewan ditambahkan.');
     return;
   }
   if (form.matches('[data-form="admin-category"]')) {

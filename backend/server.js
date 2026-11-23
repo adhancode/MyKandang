@@ -73,6 +73,26 @@ function parseNumber(value, label, { min = 0, optional = false, integer = false 
   return number;
 }
 
+async function syncIdentitySequence(client, table, column, lockId) {
+  // Callers pass fixed schema identifiers; the transaction lock serializes inserts during repair.
+  await client.query('SELECT pg_advisory_xact_lock($1,$2)', [1196440914, lockId]);
+  const result = await client.query(
+    `SELECT pg_get_serial_sequence('${table}','${column}') AS sequence_name,
+      (SELECT MAX(${column}) FROM ${table}) AS max_id,
+      pg_sequence_last_value(pg_get_serial_sequence('${table}','${column}')::regclass) AS last_value`
+  );
+  const row = result.rows[0];
+  const currentValue = Math.max(Number(row.max_id) || 0, Number(row.last_value) || 0);
+  if (currentValue > 0) {
+    await client.query('SELECT setval($1::regclass,$2,TRUE)', [row.sequence_name, currentValue]);
+  } else {
+    await client.query('SELECT setval($1::regclass,1,FALSE)', [row.sequence_name]);
+  }
+}
+
+const syncImageSequence = client => syncIdentitySequence(client, 'gambar_hewan', 'id_gambar', 1);
+const syncCategorySequence = client => syncIdentitySequence(client, 'kategori_hewan', 'id_kategori', 2);
+
 let featureSchemaPromise;
 async function ensureFeatureSchema() {
   if (!featureSchemaPromise) {
@@ -225,11 +245,18 @@ app.post('/api/admin/kategori', requireUser, requireAdmin, asyncRoute(async (req
   const nama = req.body?.nama_kategori?.trim();
   const deskripsi = req.body?.deskripsi?.trim() || null;
   if (!nama) return fail(res,400,'Nama kategori wajib diisi.');
-  const result = await db.query(
-    'INSERT INTO kategori_hewan (nama_kategori,deskripsi) VALUES ($1,$2) RETURNING id_kategori,nama_kategori,deskripsi',
-    [nama,deskripsi]
-  );
-  res.status(201).json(result.rows[0]);
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+    await syncCategorySequence(client);
+    const result = await client.query(
+      'INSERT INTO kategori_hewan (nama_kategori,deskripsi) VALUES ($1,$2) RETURNING id_kategori,nama_kategori,deskripsi',
+      [nama,deskripsi]
+    );
+    await client.query('COMMIT');
+    res.status(201).json(result.rows[0]);
+  } catch (error) { await client.query('ROLLBACK'); throw error; }
+  finally { client.release(); }
 }));
 
 app.patch('/api/admin/kategori/:id', requireUser, requireAdmin, asyncRoute(async (req, res) => {
@@ -669,7 +696,10 @@ app.post('/api/admin/hewan', requireUser, requireAdmin, asyncRoute(async (req, r
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id_hewan`,values
       );
     }
-    if (data.gambar_url?.trim()) await client.query('INSERT INTO gambar_hewan (id_hewan,url,gambar_utama) VALUES ($1,$2,TRUE)',[result.rows[0].id_hewan,data.gambar_url.trim()]);
+    if (data.gambar_url?.trim()) {
+      await syncImageSequence(client);
+      await client.query('INSERT INTO gambar_hewan (id_hewan,url,gambar_utama) VALUES ($1,$2,TRUE)',[result.rows[0].id_hewan,data.gambar_url.trim()]);
+    }
     await client.query('COMMIT');
     res.status(201).json({ id_hewan:result.rows[0].id_hewan });
   } catch (error) { await client.query('ROLLBACK'); throw error; }
@@ -709,6 +739,7 @@ app.patch('/api/admin/hewan/:id', requireUser, requireAdmin, asyncRoute(async (r
     }
     if (!result.rows[0]) { await client.query('ROLLBACK'); return fail(res,404,'Hewan tidak ditemukan.'); }
     if (data.gambar_url?.trim()) {
+      await syncImageSequence(client);
       await client.query('DELETE FROM gambar_hewan WHERE id_hewan=$1 AND gambar_utama=TRUE',[req.params.id]);
       await client.query('INSERT INTO gambar_hewan (id_hewan,url,gambar_utama) VALUES ($1,$2,TRUE)',[req.params.id,data.gambar_url.trim()]);
     }

@@ -23,7 +23,7 @@ Web katalog dan pemesanan ternak dengan HTML, CSS, JavaScript, Express, dan Post
 - Item keranjang (`detail_keranjang`) dapat ditambahkan, dibaca, diubah jumlahnya, dan dihapus oleh pengguna.
 - Panel `staff_admin`: mengelola kategori/hewan, transaksi, dan percakapan; akun pelanggan serta seluruh data terkaitnya dapat dihapus dengan konfirmasi. Akun admin dilindungi dari penghapusan.
 
-Skema tambahan untuk alamat, penjual, jadwal serah-terima, dan notifikasi tersedia di bagian `APP FEATURE SCHEMA` pada `my_kandang.sql`; backend mengambil bagian tersebut saat memerlukan migrasi fitur. Pembayaran otomatis pada aplikasi ini tidak membuat Virtual Account atau mengirim transaksi ke bank. Kolom umur pada SQL hanya bertipe angka; aplikasi menganggap nilainya dalam bulan sesuai data contoh proyek.
+Skema tambahan untuk alamat, jadwal serah-terima, dan notifikasi tersedia di bagian `APP FEATURE SCHEMA` pada `my_kandang.sql`; backend mengambil bagian tersebut saat memerlukan migrasi fitur. Biaya kurir tidak termasuk dalam total pesanan. Kolom umur pada SQL hanya bertipe angka; aplikasi menganggap nilainya dalam bulan sesuai data contoh proyek.
 
 ## Akun awal
 

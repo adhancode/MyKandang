@@ -684,7 +684,13 @@ app.patch('/api/admin/pesanan/:id', requireUser, requireAdmin, asyncRoute(async 
       for (const item of items.rows) await client.query("UPDATE hewan SET stok=stok+$1,status=CASE WHEN status IN ('Habis','Terjual') THEN 'Tersedia' ELSE status END WHERE id_hewan=$2",[item.kuantitas,item.id_hewan]);
     }
     await client.query('UPDATE pesanan SET status_pesanan=$1 WHERE id_pesanan=$2',[status_pesanan,req.params.id]);
-    await client.query("UPDATE pembayaran SET status=$1,tanggal_bayar=CASE WHEN $1='Berhasil' THEN COALESCE(tanggal_bayar,CURRENT_TIMESTAMP) ELSE NULL END WHERE id_pesanan=$2",[status_pembayaran,req.params.id]);
+    await client.query(
+      `UPDATE pembayaran
+       SET status=$1,
+           tanggal_bayar=CASE WHEN $2::boolean THEN COALESCE(tanggal_bayar,CURRENT_TIMESTAMP) ELSE NULL END
+       WHERE id_pesanan=$3`,
+      [status_pembayaran,status_pembayaran==='Berhasil',req.params.id]
+    );
     if(featureSchemaReady&&(status_pesanan!==order.rows[0].status_pesanan||status_pembayaran!==order.rows[0].status_pembayaran)){
       try{
         const title=status_pembayaran!==order.rows[0].status_pembayaran?'Status pembayaran diperbarui':'Status pesanan diperbarui';

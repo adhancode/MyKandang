@@ -3,16 +3,23 @@ const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
-const { Transform } = require('stream');
-const { pipeline } = require('stream/promises');
 const { promisify } = require('util');
 const db = require('./db');
+const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const scrypt = promisify(crypto.scrypt);
 const authSecret = process.env.AUTH_SECRET || (process.env.VERCEL ? '' : 'mykandang-local-development-secret');
 const publicDir = path.join(__dirname, '..', 'public');
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseKey = process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY;
+const supabase = supabaseUrl && supabaseKey
+  ? createClient(supabaseUrl, supabaseKey, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    })
+  : null;
+const STORAGE_BUCKET = 'hewan';
 
 if (process.env.VERCEL && !authSecret) throw new Error('AUTH_SECRET wajib diatur pada Vercel.');
 
@@ -517,45 +524,62 @@ app.get('/api/admin/pesanan', requireUser, requireAdmin, asyncRoute(async (_req,
   res.json(result.rows);
 }));
 
-app.post('/api/admin/hewan/foto', requireUser, requireAdmin, asyncRoute(async (req, res) => {
+app.post(
+  '/api/admin/hewan/foto',
+  requireUser,
+  requireAdmin,
+  express.raw({ type: '*/*', limit: '5mb' }),
+  asyncRoute(async (req, res) => {
+    if (!supabase) {
+      return fail(res, 503, 'Konfigurasi Supabase Storage belum tersedia.');
+    }
+
     const mimeType = String(req.headers['x-image-type'] || '').toLowerCase();
     const formats = {
-      'image/jpeg': { extension: 'jpg', valid: buffer => buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff },
-      'image/png': { extension: 'png', valid: buffer => buffer.length >= 8 && buffer.subarray(0, 8).toString('hex') === '89504e470d0a1a0a' },
-      'image/webp': { extension: 'webp', valid: buffer => buffer.length >= 12 && buffer.toString('ascii', 0, 4) === 'RIFF' && buffer.toString('ascii', 8, 12) === 'WEBP' },
+      'image/jpeg': {
+        extension: 'jpg',
+        valid: buffer => buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff,
+      },
+      'image/png': {
+        extension: 'png',
+        valid: buffer => buffer.length >= 8 && buffer.subarray(0, 8).toString('hex') === '89504e470d0a1a0a',
+      },
+      'image/webp': {
+        extension: 'webp',
+        valid: buffer => buffer.length >= 12 && buffer.toString('ascii', 0, 4) === 'RIFF' && buffer.toString('ascii', 8, 12) === 'WEBP',
+      },
     };
     const format = formats[mimeType];
     if (!format) return fail(res, 415, 'Format foto harus JPG, PNG, atau WebP.');
 
-    const uploadDir = path.join(publicDir, 'assets', 'hewan', 'uploads');
-    await fs.promises.mkdir(uploadDir, { recursive: true });
-    const fileName = `${crypto.randomBytes(16).toString('hex')}.${format.extension}`;
-    const filePath = path.join(uploadDir, fileName);
-    let prefix = Buffer.alloc(0);
-    let byteCount = 0;
-    const inspectPrefix = new Transform({
-      transform(chunk, _encoding, callback) {
-        byteCount += chunk.length;
-        if (prefix.length < 12) prefix = Buffer.concat([prefix, chunk.subarray(0, 12 - prefix.length)]);
-        callback(null, chunk);
-      },
-    });
-    try {
-      await pipeline(req, inspectPrefix, fs.createWriteStream(filePath, { flags: 'wx' }));
-      if (byteCount === 0) {
-        await fs.promises.unlink(filePath).catch(() => {});
-        return fail(res, 400, 'Pilih foto hewan terlebih dahulu.');
-      }
-      if (!format.valid(prefix)) {
-        await fs.promises.unlink(filePath).catch(() => {});
-        return fail(res, 415, 'Isi file tidak sesuai dengan format foto yang dipilih.');
-      }
-    } catch (error) {
-      await fs.promises.unlink(filePath).catch(() => {});
-      throw error;
+    const imageBuffer = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+    if (imageBuffer.length === 0) return fail(res, 400, 'Pilih foto hewan terlebih dahulu.');
+    if (!format.valid(imageBuffer)) {
+      return fail(res, 415, 'Isi file tidak sesuai dengan format foto yang dipilih.');
     }
-    res.status(201).json({ url: `/assets/hewan/uploads/${fileName}` });
-  }));
+
+    const fileName = `${crypto.randomBytes(16).toString('hex')}.${format.extension}`;
+    const filePath = `uploads/${fileName}`;
+    const { data, error } = await supabase.storage
+      .from(STORAGE_BUCKET)
+      .upload(filePath, imageBuffer, {
+        contentType: mimeType,
+        cacheControl: '3600',
+        upsert: false,
+      });
+
+    if (error) {
+      console.error('Supabase Storage upload gagal:', error);
+      return fail(res, 502, 'Foto gagal disimpan ke Supabase Storage.');
+    }
+
+    const { data: urlData } = supabase.storage
+      .from(STORAGE_BUCKET)
+      .getPublicUrl(data.path);
+
+    res.status(201).json({ url: urlData.publicUrl });
+  })
+);
 
 app.post('/api/admin/hewan', requireUser, requireAdmin, asyncRoute(async (req, res) => {
   const data = req.body || {};

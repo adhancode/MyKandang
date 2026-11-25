@@ -24,7 +24,7 @@ Untuk membuat situs yang bisa dibuka orang lain melalui internet:
 4. Pilih **Deploy**. Setelah deployment berhasil, buka **Overview** atau **Deployments** di Vercel lalu klik **Visit** untuk melihat situs publik.
 5. Salin URL yang diberikan Vercel (biasanya berbentuk `https://nama-proyek.vercel.app`) ke bagian ini agar pengunjung mudah menemukannya:
 
-   **Link publik:** _tambahkan URL Vercel setelah deployment berhasil._
+   **Link publik:** https://mykandang-app.vercel.app/
 
 Perubahan pada branch GitHub yang terhubung dapat memicu deployment baru secara otomatis. Variabel yang baru ditambahkan atau diubah berlaku setelah deployment baru dibuat.
 

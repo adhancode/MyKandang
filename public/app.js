@@ -414,13 +414,17 @@ function minimumHandoffLocal() {
 function renderOrderDetail() {
   const order = currentOrder();
   if (!order) return renderOrders();
+  const isAdmin = state.user?.role === 'staff_admin';
   const cancelled = order.status_pesanan === 'Dibatalkan';
   const details = order.details || [];
   const status = order.status_pesanan || 'Pending';
-  const canReview = status === 'Selesai';
+  const canReview = !isAdmin && status === 'Selesai';
   const paid=order.status_pembayaran==='Berhasil';
-  return `<section class="page"><button class="back-link" data-page="orders">${icon('arrow')} Kembali ke pesanan</button><div class="page-header"><div><span class="eyebrow">Pesanan #${order.id_pesanan}</span><h1>Status pesanan</h1><p>${new Date(order.tgl_pesanan).toLocaleString('id-ID')}</p></div><span class="pill ${cancelled?'red':''}">${escapeHtml(status)}</span></div><div class="status-layout"><div class="checkout-stack"><div class="status-banner"><span class="status-icon">${cancelled?'↩':paid?'✓':'…'}</span><span><strong>${cancelled?'Pesanan dibatalkan':paid?'Pembayaran berhasil':`Status ${escapeHtml(status)}`}</strong><p>${order.jadwal_serah_terima?`Jadwal serah-terima: ${new Date(order.jadwal_serah_terima).toLocaleString('id-ID')}`:'Status pesanan terbaru ditampilkan di sini.'}</p></span></div><section class="panel"><div class="panel-head"><h3>Detail pesanan</h3></div>${order.alasan_pembatalan?`<div class="info-callout"><strong>Alasan pembatalan:</strong> ${escapeHtml(order.alasan_pembatalan)}</div>`:''}${order.alamat_pengiriman?`<div class="order-address-summary"><strong>Alamat serah-terima</strong><p>${escapeHtml(order.alamat_pengiriman)}</p></div>`:''}${details.map(line=>`<div class="summary-product"><div class="summary-thumb">${animalEmoji({kind:animalById(line.id_hewan)?.kind})}</div><span><strong>${escapeHtml(line.nama)}</strong><small>${line.kuantitas} ekor × ${formatPrice(line.harga_satuan)}</small><small>Subtotal ${formatPrice(line.subtotal)}</small>${canReview?(line.sudah_diulas?'<small class="muted">Ulasan sudah dikirim</small>':`<button class="text-link" data-action="write-review" data-id="${order.id_pesanan}" data-animal="${line.id_hewan}">Beri ulasan</button>`):''}</span></div>`).join('')}${status==='Pending'&&!paid?`<div class="info-callout">Pesanan menunggu proses berikutnya.</div><button class="button button-danger button-small" data-action="cancel-order" data-id="${order.id_pesanan}">Batalkan pesanan</button>`:''}</section></div>
-  <aside class="panel"><div class="panel-head"><h3>Pembayaran</h3></div><div class="receipt-row"><span>Status</span><strong>${escapeHtml(order.status_pembayaran||'Belum Dibayar')}</strong></div><div class="receipt-row"><span>Metode</span><strong>${escapeHtml(order.metode_pembayaran||'BCA (Bank Central Asia)')}</strong></div><div class="receipt-row total"><span>Total</span><strong>${formatPrice(order.total_harga)}</strong></div>${paid?'<p class="payment-success-note">Pembayaran terdeteksi otomatis.</p>':!cancelled?`<button class="button button-block" style="margin-top:12px" data-action="payment" data-id="${order.id_pesanan}">Deteksi pembayaran ${icon('arrowRight',14)}</button>`:''}</aside></div></section>`;
+  const backButton = isAdmin
+    ? `<button class="back-link" data-page="admin">${icon('arrow')} Kembali ke panel admin</button>`
+    : `<button class="back-link" data-page="orders">${icon('arrow')} Kembali ke pesanan</button>`;
+  return `<section class="page">${backButton}<div class="page-header"><div><span class="eyebrow">Pesanan #${order.id_pesanan}</span><h1>Status pesanan</h1><p>${new Date(order.tgl_pesanan).toLocaleString('id-ID')}</p></div><span class="pill ${cancelled?'red':''}">${escapeHtml(status)}</span></div><div class="status-layout"><div class="checkout-stack"><div class="status-banner"><span class="status-icon">${cancelled?'↩':paid?'✓':'…'}</span><span><strong>${cancelled?'Pesanan dibatalkan':paid?'Pembayaran berhasil':`Status ${escapeHtml(status)}`}</strong><p>${order.jadwal_serah_terima?`Jadwal serah-terima: ${new Date(order.jadwal_serah_terima).toLocaleString('id-ID')}`:'Status pesanan terbaru ditampilkan di sini.'}</p></span></div><section class="panel"><div class="panel-head"><h3>Detail pesanan</h3></div>${order.alasan_pembatalan?`<div class="info-callout"><strong>Alasan pembatalan:</strong> ${escapeHtml(order.alasan_pembatalan)}</div>`:''}${order.alamat_pengiriman?`<div class="order-address-summary"><strong>Alamat serah-terima</strong><p>${escapeHtml(order.alamat_pengiriman)}</p></div>`:''}${details.map(line=>`<div class="summary-product"><div class="summary-thumb">${animalEmoji({kind:animalById(line.id_hewan)?.kind})}</div><span><strong>${escapeHtml(line.nama)}</strong><small>${line.kuantitas} ekor × ${formatPrice(line.harga_satuan)}</small><small>Subtotal ${formatPrice(line.subtotal)}</small>${canReview?(line.sudah_diulas?'<small class="muted">Ulasan sudah dikirim</small>':`<button class="text-link" data-action="write-review" data-id="${order.id_pesanan}" data-animal="${line.id_hewan}">Beri ulasan</button>`):''}</span></div>`).join('')}${status==='Pending'&&!paid&&!isAdmin?`<div class="info-callout">Pesanan menunggu proses berikutnya.</div><button class="button button-danger button-small" data-action="cancel-order" data-id="${order.id_pesanan}">Batalkan pesanan</button>`:''}</section></div>
+  <aside class="panel"><div class="panel-head"><h3>Pembayaran</h3></div><div class="receipt-row"><span>Status</span><strong>${escapeHtml(order.status_pembayaran||'Belum Dibayar')}</strong></div><div class="receipt-row"><span>Metode</span><strong>${escapeHtml(order.metode_pembayaran||'BCA (Bank Central Asia)')}</strong></div><div class="receipt-row total"><span>Total</span><strong>${formatPrice(order.total_harga)}</strong></div>${isAdmin?'':paid?'<p class="payment-success-note">Pembayaran terdeteksi otomatis.</p>':!cancelled?`<button class="button button-block" style="margin-top:12px" data-action="payment" data-id="${order.id_pesanan}">Deteksi pembayaran ${icon('arrowRight',14)}</button>`:''}</aside></div></section>`;
 }
 
 function renderReview() {
@@ -957,7 +961,15 @@ document.addEventListener('click', async event => {
   if (action==='admin-save-order') {
     const status_pesanan=document.querySelector(`[data-admin-order-status="${id}"]`)?.value;
     const status_pembayaran=document.querySelector(`[data-admin-payment-status="${id}"]`)?.value;
-    try { await api(`/admin/pesanan/${id}`,{method:'PATCH',body:JSON.stringify({status_pesanan,status_pembayaran})});await loadAdmin();render();showToast('Status transaksi diperbarui.'); }
+    try {
+      await api(`/admin/pesanan/${id}`,{method:'PATCH',body:JSON.stringify({status_pesanan,status_pembayaran})});
+      await loadAdmin();
+      state.currentOrderId=Number(id);
+      state.currentOrder=state.adminOrders.find(order=>Number(order.id_pesanan)===Number(id))||null;
+      if(!state.currentOrder) throw new Error('Detail pesanan tidak ditemukan.');
+      setPage('order-detail');
+      showToast('Status transaksi diperbarui.');
+    }
     catch(error) { showToast(error.message); }
     return;
   }

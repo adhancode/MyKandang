@@ -595,7 +595,7 @@ function switchAuthMode(mode) {
   state.authMode=mode;
   const tabs=root.querySelector('.auth-tabs');
   tabs.dataset.mode=mode;
-  tabs.style.setProperty('--auth-tab-offset',register?'100%':'0');
+  tabs.style.setProperty('--auth-tab-offset',register?'calc(100% + 3px)':'0');
   tabs.querySelectorAll('[role="tab"]').forEach((tab,index)=>{
     const active=index===(register?1:0);
     tab.classList.toggle('active',active);
@@ -615,8 +615,8 @@ function openAuthModal(mode = 'login') {
   state.authMode = mode;
   const register = mode === 'register';
   root.innerHTML=`<div class="auth-backdrop" data-action="backdrop"><section class="auth-card" role="dialog" aria-modal="true" aria-label="${register?'Daftar':'Masuk'} MyKandang">
-    <div class="auth-intro"><div><div class="auth-brand">My<span>Kandang</span></div><h1>Selamat datang!</h1><p>${register?'Daftar untuk mulai memesan ternak dan chat dengan MyKandang.':'Masuk untuk memesan ternak dan chat dengan MyKandang.'}</p></div><img class="auth-mascot" src="assets/cow.svg" alt="" /></div>
-    <div class="auth-tabs" data-mode="${register?'register':'login'}" style="--auth-tab-offset:${register?'100%':'0'}" role="tablist" aria-label="Pilih masuk atau daftar"><span class="auth-tab-indicator" aria-hidden="true"></span><button type="button" role="tab" aria-selected="${!register}" class="${!register?'active':''}" data-action="auth-mode" data-value="login">Masuk</button><button type="button" role="tab" aria-selected="${register}" class="${register?'active':''}" data-action="auth-mode" data-value="register">Daftar</button></div>
+    <div class="auth-intro"><div><div class="auth-brand">My<span>Kandang</span></div><h1>Selamat datang!</h1><p>${register?'Daftar untuk mulai memesan ternak dan chat dengan MyKandang.':'Masuk untuk memesan ternak dan chat dengan MyKandang.'}</p></div><img class="auth-mascot" src="assets/cow-login.png" alt="" /></div>
+    <div class="auth-tabs" data-mode="${register?'register':'login'}" style="--auth-tab-offset:${register?'calc(100% + 3px)':'0'}" role="tablist" aria-label="Pilih masuk atau daftar"><span class="auth-tab-indicator" aria-hidden="true"></span><button type="button" role="tab" aria-selected="${!register}" class="${!register?'active':''}" data-action="auth-mode" data-value="login">Masuk</button><button type="button" role="tab" aria-selected="${register}" class="${register?'active':''}" data-action="auth-mode" data-value="register">Daftar</button></div>
     <form class="auth-form" data-form="auth" data-mode="${register?'register':'login'}">${renderAuthFields(register,previousEmail)}</form>
     <p class="auth-bottom">${register?'Sudah punya akun?':'Belum punya akun?'} <button type="button" class="auth-link" data-action="auth-mode" data-value="${register?'login':'register'}">${register?'Masuk':'Daftar'}</button></p>
   </section></div>`;
